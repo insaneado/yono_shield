@@ -62,6 +62,21 @@
             </intent-filter>
         </receiver>
 
+        <!-- ============================================================== -->
+        <!-- OMNI-SCANNER — NotificationListenerService                     -->
+        <!-- Intercepts notifications from ALL messaging apps, extracts     -->
+        <!-- URLs, and scans them against the KAVACH backend in real-time.   -->
+        <!-- Requires user consent via Settings > Notification Access.      -->
+        <!-- ============================================================== -->
+        <service
+            android:name=".OmniScannerService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <!-- Flutter embedding metadata -->
         <meta-data
             android:name="flutterEmbedding"

@@ -36,18 +36,22 @@
 
 from __future__ import annotations
 
-import io
 import logging
 import os
 from datetime import datetime, timezone
 
-import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from meta_client import (
+    META_VERIFY_TOKEN,
+    download_meta_image,
+    download_whatsapp_media,
+    send_whatsapp_reply,
+)
 from scanner import extract_urls, scan_image, scan_url
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -63,11 +67,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kavach.main")
 
-# Meta / WhatsApp Cloud API configuration.
-# For the hackathon demo these can be set to any placeholder values.
-META_VERIFY_TOKEN: str = os.getenv("META_VERIFY_TOKEN", "kavach_verify_token_2026")
-META_ACCESS_TOKEN: str = os.getenv("META_ACCESS_TOKEN", "")
-META_PHONE_NUMBER_ID: str = os.getenv("META_PHONE_NUMBER_ID", "")
+# Meta / WhatsApp Cloud API configuration is centralized in meta_client.py.
+# META_VERIFY_TOKEN, send_whatsapp_reply, and download_whatsapp_media are
+# imported from there. See .env for credential setup.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # APP INIT
@@ -135,90 +137,10 @@ class ScanVerdict(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# META WHATSAPP CLOUD API — MEDIA DOWNLOAD
+# META WHATSAPP CLOUD API
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def download_whatsapp_media(media_id: str) -> bytes | None:
-    """Download media (image) from the WhatsApp Cloud API by media ID.
-
-    Step 1: GET the media URL from the Meta Graph API.
-    Step 2: Download the actual binary payload from the returned URL.
-
-    Returns raw bytes on success, or None on failure.
-    """
-    if not META_ACCESS_TOKEN:
-        logger.warning("META_ACCESS_TOKEN not set; cannot download media")
-        return None
-
-    headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
-
-    try:
-        # Step 1 — Resolve media ID to a download URL.
-        meta_url = f"https://graph.facebook.com/v19.0/{media_id}"
-        resp = requests.get(meta_url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        download_url = resp.json().get("url")
-        if not download_url:
-            logger.error("No download URL returned for media_id=%s", media_id)
-            return None
-
-        # Step 2 — Download the binary image.
-        img_resp = requests.get(download_url, headers=headers, timeout=15)
-        img_resp.raise_for_status()
-        logger.info(
-            "Downloaded media %s (%d bytes)", media_id, len(img_resp.content)
-        )
-        return img_resp.content
-
-    except requests.RequestException as exc:
-        logger.error("Media download failed for %s: %s", media_id, exc)
-        return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# META WHATSAPP CLOUD API — OUTBOUND REPLY (mock stub)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def send_whatsapp_reply(phone_number: str, text: str) -> None:
-    """Send a reply back to the user via the WhatsApp Cloud API.
-
-    For the hackathon MVP this simply prints to the console.  In production
-    this would POST to:
-      https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages
-
-    Args:
-        phone_number: The recipient's WhatsApp number (e.g. "919876543210").
-        text:         The reply message body.
-    """
-    logger.info("━" * 60)
-    logger.info("📤 OUTBOUND REPLY → %s", phone_number)
-    logger.info("   %s", text)
-    logger.info("━" * 60)
-
-    # ── Production implementation (uncomment when Cloud API is live) ──
-    # if not META_ACCESS_TOKEN or not META_PHONE_NUMBER_ID:
-    #     logger.warning("Meta credentials not configured; reply not sent")
-    #     return
-    #
-    # payload = {
-    #     "messaging_product": "whatsapp",
-    #     "to": phone_number,
-    #     "type": "text",
-    #     "text": {"body": text},
-    # }
-    # url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
-    # headers = {
-    #     "Authorization": f"Bearer {META_ACCESS_TOKEN}",
-    #     "Content-Type": "application/json",
-    # }
-    # try:
-    #     resp = requests.post(url, json=payload, headers=headers, timeout=10)
-    #     resp.raise_for_status()
-    #     logger.info("Reply sent successfully: %s", resp.json())
-    # except requests.RequestException as exc:
-    #     logger.error("Failed to send reply: %s", exc)
+# send_whatsapp_reply() and download_whatsapp_media() are imported from
+# meta_client.py — the single source of truth for all Meta Graph API logic.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,13 +151,17 @@ def send_whatsapp_reply(phone_number: str, text: str) -> None:
 def process_image_message(media_id: str) -> dict:
     """Download an image from WhatsApp and scan it for malicious QR codes.
 
+    Uses download_meta_image() from meta_client.py which performs the
+    two-step Graph API resolution (media ID → URL → raw bytes), then
+    feeds the image through the pyzbar QR decoder → scan_url() pipeline.
+
     Args:
         media_id: The WhatsApp Cloud API media ID.
 
     Returns:
         A scan_image() result dict.
     """
-    image_bytes = download_whatsapp_media(media_id)
+    image_bytes = download_meta_image(media_id)
     if image_bytes is None:
         return {
             "source": "QR_SCAN",
@@ -425,8 +351,8 @@ async def webhook_whatsapp(request: Request) -> dict:
                         )
                     else:
                         alert = (
-                            "\u2705 KAVACH: Image scanned. No malicious "
-                            "QR codes detected."
+                            "\u2705 KAVACH: No QR codes or threats found "
+                            "in this image."
                         )
 
                     send_whatsapp_reply(sender, alert)
@@ -532,7 +458,7 @@ async def ingest_fraud_report(report: FraudReport) -> dict:
     For the MVP we simply acknowledge receipt.
     """
     logger.info(
-        "📋 Fraud report: device=%s pkg=%s type=%s",
+        "\U0001f4cb Fraud report: device=%s pkg=%s type=%s",
         report.device_id,
         report.package_name,
         report.threat_type,
@@ -541,4 +467,62 @@ async def ingest_fraud_report(report: FraudReport) -> dict:
         "status": "received",
         "report_id": f"RPT-{abs(hash(report.device_id + report.timestamp)) % 10**8:08d}",
         "message": "Fraud report ingested successfully.",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TELEMETRY BRIDGE (from YONO Shield Android client)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TelemetryPayload(BaseModel):
+    """Threat telemetry payload sent by the YONO Shield mobile client."""
+
+    device_id: str = Field(..., description="Hashed device identifier.")
+    package_name: str = Field(..., description="Package name of the threat.")
+    threat_type: str = Field(
+        ..., description="Classification: TROJAN, SIGNATURE_MISMATCH, etc."
+    )
+    timestamp: str = Field(..., description="ISO-8601 detection timestamp.")
+
+
+@app.post(
+    "/api/telemetry",
+    summary="Ingest real-time threat telemetry from the YONO Shield client",
+)
+async def ingest_telemetry(payload: TelemetryPayload) -> dict:
+    """Accept and log threat telemetry from the YONO Shield mobile client.
+
+    This is the enterprise Telemetry Bridge endpoint.  In production this
+    would stream events to a SIEM / data lake (Splunk, ELK, BigQuery).
+    For the MVP we log a prominent ASCII-art banner to the console.
+    """
+    # ── ASCII-art banner for demo visibility ──
+    banner = (
+        "\n"
+        "+============================================================+\n"
+        "|        !! NEW THREAT LOGGED !!                             |\n"
+        "+============================================================+\n"
+        f"|  Device    : {payload.device_id:<42}|\n"
+        f"|  Package   : {payload.package_name:<42}|\n"
+        f"|  Threat    : {payload.threat_type:<42}|\n"
+        f"|  Timestamp : {payload.timestamp:<42}|\n"
+        "+============================================================+\n"
+    )
+    print(banner)
+
+    logger.info(
+        "[ALERT] TELEMETRY: device=%s pkg=%s threat=%s ts=%s",
+        payload.device_id,
+        payload.package_name,
+        payload.threat_type,
+        payload.timestamp,
+    )
+
+    report_id = f"TEL-{abs(hash(payload.device_id + payload.timestamp)) % 10**8:08d}"
+
+    return {
+        "status": "logged",
+        "report_id": report_id,
+        "message": "Threat telemetry ingested successfully.",
     }

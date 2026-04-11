@@ -35,19 +35,25 @@ import 'pages/overlay_control_page.dart';
 import 'services/security_bridge.dart';
 
 Future<void> reportFraudSilently(String badPackage, String threatType) async {
+  // ── KAVACH Telemetry Bridge ──
+  // For Android Emulator → host machine: http://10.0.2.2:8080/api/telemetry
+  // For Ngrok tunnel (demo): https://YOUR_NGROK_ID.ngrok-free.app/api/telemetry
+  const telemetryUrl = 'http://10.0.2.2:8080/api/telemetry';
+
   try {
     await http.post(
-      Uri.parse('https://api.kavach.mock/v1/report'),
+      Uri.parse(telemetryUrl),
       headers: const {'Content-Type': 'application/json'},
       body: jsonEncode({
-        'device_id': 'hashed_mock_id_123',
+        'device_id': 'yono_shield_device_01',
         'package_name': badPackage,
         'threat_type': threatType,
         'timestamp': DateTime.now().toIso8601String(),
       }),
     );
   } catch (_) {
-    // Silent by design for demo resilience.
+    // Silent by design — backend may be offline during demo.
+    // The Red Alert UI must never freeze for a network call.
   }
 }
 
@@ -330,7 +336,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
               Text(
                 [
                   'CRYPTO GATEKEEPER • SIGNATURE RADAR',
-                  'SMS INTERCEPTOR • PHISHING GUARD',
+                  'OMNI-CHANNEL SHIELD • PHISHING GUARD',
                   'THREAT SHIELD • BLOCK OVERLAY',
                 ][_tab],
                 style: TextStyle(
@@ -385,7 +391,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
             _navItem(0, Icons.fingerprint_rounded, 'RADAR'),
-            _navItem(1, Icons.sms_rounded, 'SMS'),
+            _navItem(1, Icons.shield_rounded, 'SHIELD'),
             _navItem(2, Icons.layers_rounded, 'OVERLAY'),
           ],
         ),

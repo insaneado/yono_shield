@@ -277,6 +277,36 @@ class MainActivity : FlutterActivity() {
                         )
                     }
 
+                    "openNotificationListenerSettings" -> {
+                        try {
+                            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to open notification listener settings", e)
+                            result.error(
+                                "SETTINGS_ERROR",
+                                "Failed to open notification settings: ${e.message}",
+                                null
+                            )
+                        }
+                    }
+
+                    "isNotificationListenerEnabled" -> {
+                        try {
+                            val enabledListeners = Settings.Secure.getString(
+                                contentResolver,
+                                "enabled_notification_listeners"
+                            ) ?: ""
+                            val isEnabled = enabledListeners.contains(packageName)
+                            result.success(isEnabled)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to check notification listener status", e)
+                            result.success(false)
+                        }
+                    }
+
                     else -> result.notImplemented()
                 }
             }
