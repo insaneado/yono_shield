@@ -13,6 +13,7 @@ dependencies:
 
   # Typography — Orbitron for cybersecurity headings, Inter for body text
   google_fonts: ^6.1.0
+  http: ^1.2.2
 
   # Shimmer effects for scanning animations
   shimmer: ^3.0.0

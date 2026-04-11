@@ -9,6 +9,8 @@
 //   - verifyAppSecurity()    → master gatekeeper (root + signature check)
 // ============================================================================
 
+// ignore_for_file: unintended_html_in_doc_comment
+
 import 'package:flutter/services.dart';
 
 class SecurityBridge {
@@ -16,8 +18,9 @@ class SecurityBridge {
   factory SecurityBridge() => _instance;
   SecurityBridge._internal();
 
-  static const MethodChannel _channel =
-      MethodChannel('com.yonoshield.security/bridge');
+  static const MethodChannel _channel = MethodChannel(
+    'com.yonoshield.security/bridge',
+  );
 
   // ==========================================================================
   // LAYER 3 — Cryptographic Gatekeeper
@@ -39,25 +42,19 @@ class SecurityBridge {
 
   /// Master security verification — the Cryptographic Gatekeeper.
   ///
-  /// Invokes the native `verifyAppSecurity` method which:
-  ///   1. Checks if the device is rooted → returns "ROOTED_DEVICE"
-  ///   2. Extracts SHA-256 signing cert hash of the target app
-  ///   3. Compares against known-good official hash
+  /// The native bridge now short-circuits with a plain String verdict for:
+  ///   1. Root detection → "ROOTED_DEVICE"
+  ///   2. Trojan audit   → "TROJAN_DETECTED_<AppName>"
   ///
-  /// Returns a Map with keys:
-  ///   - verdict:      "SAFE" | "ROOTED_DEVICE" | "INVALID_SIGNATURE" | "APP_NOT_FOUND"
-  ///   - packageName:  the queried package
-  ///   - isRooted:     boolean
-  ///   - liveHash:     the extracted SHA-256 hash (nullable)
-  ///   - expectedHash: the official reference hash
-  ///   - message:      human-readable status message
+  /// If both gates pass, Android returns the existing signature-verification
+  /// result map. This wrapper normalizes either shape into one Dart map so the
+  /// UI can render a single verdict model.
   Future<Map<String, dynamic>> verifyAppSecurity(String packageName) async {
     try {
-      final result = await _channel.invokeMethod(
-        'verifyAppSecurity',
-        {'packageName': packageName},
-      );
-      return Map<String, dynamic>.from(result as Map);
+      final result = await _channel.invokeMethod('verifyAppSecurity', {
+        'packageName': packageName,
+      });
+      return _normalizeSecurityResult(result, packageName);
     } on MissingPluginException {
       // Web/desktop fallback — simulate a safe response
       return {
@@ -73,6 +70,56 @@ class SecurityBridge {
     }
   }
 
+  Map<String, dynamic> _normalizeSecurityResult(
+    dynamic result,
+    String packageName,
+  ) {
+    if (result is Map) {
+      return Map<String, dynamic>.from(result);
+    }
+
+    final verdict = result?.toString() ?? 'UNKNOWN';
+
+    if (verdict == 'ROOTED_DEVICE') {
+      return {
+        'verdict': verdict,
+        'packageName': packageName,
+        'isRooted': true,
+        'trojanApp': null,
+        'liveHash': null,
+        'expectedHash': 'UNAVAILABLE',
+        'message':
+            'Device OS compromised. Root access was detected and YONO remains locked.',
+      };
+    }
+
+    if (verdict.startsWith('TROJAN_DETECTED_')) {
+      final trojanApp = verdict.split('TROJAN_DETECTED_').last.trim();
+      final safeTrojanApp = trojanApp.isEmpty ? 'Unknown app' : trojanApp;
+
+      return {
+        'verdict': verdict,
+        'packageName': packageName,
+        'isRooted': false,
+        'trojanApp': safeTrojanApp,
+        'liveHash': null,
+        'expectedHash': 'UNAVAILABLE',
+        'message':
+            "'$safeTrojanApp' has malicious screen-reading permissions. Uninstall immediately to unlock YONO.",
+      };
+    }
+
+    return {
+      'verdict': verdict,
+      'packageName': packageName,
+      'isRooted': false,
+      'trojanApp': null,
+      'liveHash': null,
+      'expectedHash': 'UNAVAILABLE',
+      'message': 'Unknown security verdict returned by the native bridge.',
+    };
+  }
+
   // ==========================================================================
   // EXISTING — Package Scanning & Legacy Signature Verification
   // ==========================================================================
@@ -83,9 +130,7 @@ class SecurityBridge {
     try {
       final result = await _channel.invokeMethod('getInstalledPackages');
       if (result is List) {
-        return result
-            .map((e) => Map<String, dynamic>.from(e as Map))
-            .toList();
+        return result.map((e) => Map<String, dynamic>.from(e as Map)).toList();
       }
       return [];
     } on MissingPluginException {
@@ -99,10 +144,9 @@ class SecurityBridge {
   /// Returns hex string like "AA:BB:CC:..." or null if not found.
   Future<String?> getAppSignatureHash(String packageName) async {
     try {
-      final result = await _channel.invokeMethod(
-        'getAppSignatureHash',
-        {'packageName': packageName},
-      );
+      final result = await _channel.invokeMethod('getAppSignatureHash', {
+        'packageName': packageName,
+      });
       return result as String?;
     } on MissingPluginException {
       return null;
@@ -116,10 +160,9 @@ class SecurityBridge {
   /// expectedHash, verdict.
   Future<Map<String, dynamic>> verifyAppSignature(String packageName) async {
     try {
-      final result = await _channel.invokeMethod(
-        'verifyAppSignature',
-        {'packageName': packageName},
-      );
+      final result = await _channel.invokeMethod('verifyAppSignature', {
+        'packageName': packageName,
+      });
       return Map<String, dynamic>.from(result as Map);
     } on MissingPluginException {
       return {
@@ -132,6 +175,16 @@ class SecurityBridge {
       };
     } on PlatformException catch (e) {
       throw Exception('Verification failed: ${e.message}');
+    }
+  }
+
+  Future<void> uninstallApp(String packageName) async {
+    try {
+      await _channel.invokeMethod('uninstallApp', {'packageName': packageName});
+    } on MissingPluginException {
+      return;
+    } on PlatformException catch (e) {
+      throw Exception('Uninstall failed: ${e.message}');
     }
   }
 }
