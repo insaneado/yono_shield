@@ -18,6 +18,12 @@ dependencies:
   # Shimmer effects for scanning animations
   shimmer: ^3.0.0
 
+  # Text-to-Speech — Audio-Visual Red Alert for low-literacy users
+  flutter_tts: ^4.2.0
+
+  # Tinder-style card swiping — Gamified Scam Simulator
+  appinio_swiper: ^2.1.1
+
   # Default Flutter icons
   cupertino_icons: ^1.0.8
 

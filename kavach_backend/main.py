@@ -41,7 +41,7 @@ import os
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, Request
+from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -53,6 +53,7 @@ from meta_client import (
     send_whatsapp_reply,
 )
 from scanner import extract_urls, scan_image, scan_url
+from takedown_automation import execute_takedown_protocol
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENVIRONMENT & LOGGING
@@ -272,7 +273,10 @@ async def webhook_verify(
 
 
 @app.post("/webhook/whatsapp")
-async def webhook_whatsapp(request: Request) -> dict:
+async def webhook_whatsapp(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict:
     """Process incoming WhatsApp messages from the Meta Cloud API.
 
     The Meta webhook POST payload follows this structure:
@@ -327,6 +331,22 @@ async def webhook_whatsapp(request: Request) -> dict:
                     )
                     send_whatsapp_reply(sender, alert)
 
+                    # ── Takedown Protocol: fire in background for every
+                    #    PHISHING URL so the reply is never delayed ──
+                    if status == "BLOCKED":
+                        for sr in scanned_urls:
+                            if sr.get("verdict") == "PHISHING":
+                                phishing_url = sr.get("url", "")
+                                if phishing_url:
+                                    logger.info(
+                                        "🚨 Queueing takedown for %s",
+                                        phishing_url,
+                                    )
+                                    background_tasks.add_task(
+                                        execute_takedown_protocol,
+                                        phishing_url,
+                                    )
+
                     logger.info(
                         "Verdict for %s: %s (%d URLs scanned)",
                         sender,
@@ -356,6 +376,22 @@ async def webhook_whatsapp(request: Request) -> dict:
                         )
 
                     send_whatsapp_reply(sender, alert)
+
+                    # ── Takedown Protocol for QR-embedded phishing URLs ──
+                    if qr_verdict == "PHISHING":
+                        for sr in qr_result.get("scanned_urls", []):
+                            if sr.get("verdict") == "PHISHING":
+                                phishing_url = sr.get("url", "")
+                                if phishing_url:
+                                    logger.info(
+                                        "🚨 Queueing takedown (QR) for %s",
+                                        phishing_url,
+                                    )
+                                    background_tasks.add_task(
+                                        execute_takedown_protocol,
+                                        phishing_url,
+                                    )
+
                     logger.info(
                         "QR verdict for %s: %s (%d QR codes found)",
                         sender,
@@ -490,7 +526,10 @@ class TelemetryPayload(BaseModel):
     "/api/telemetry",
     summary="Ingest real-time threat telemetry from the YONO Shield client",
 )
-async def ingest_telemetry(payload: TelemetryPayload) -> dict:
+async def ingest_telemetry(
+    payload: TelemetryPayload,
+    background_tasks: BackgroundTasks,
+) -> dict:
     """Accept and log threat telemetry from the YONO Shield mobile client.
 
     This is the enterprise Telemetry Bridge endpoint.  In production this
@@ -521,8 +560,22 @@ async def ingest_telemetry(payload: TelemetryPayload) -> dict:
 
     report_id = f"TEL-{abs(hash(payload.device_id + payload.timestamp)) % 10**8:08d}"
 
+    # ── Takedown Protocol: auto-trigger for PHISHING telemetry ──
+    # The threat_type from the Flutter client may encode the malicious
+    # package name or URL.  If it contains "PHISHING", fire the pipeline.
+    if "PHISHING" in payload.threat_type.upper():
+        # The package_name field in phishing telemetry often carries the URL
+        target_url = payload.package_name
+        if not target_url.startswith("http"):
+            target_url = f"https://{target_url}"
+        logger.info(
+            "🚨 Queueing takedown from telemetry for %s", target_url
+        )
+        background_tasks.add_task(execute_takedown_protocol, target_url)
+
     return {
         "status": "logged",
         "report_id": report_id,
         "message": "Threat telemetry ingested successfully.",
+        "takedown_queued": "PHISHING" in payload.threat_type.upper(),
     }
