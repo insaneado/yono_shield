@@ -28,6 +28,7 @@ import re
 import socket
 from urllib.parse import urlparse
 
+import requests
 import whois
 from PIL import Image
 from pyzbar import pyzbar
@@ -65,6 +66,16 @@ WHITELISTED_DOMAINS: set[str] = {
 # Strict timeout for WHOIS lookups (seconds).  If the global registry is slow
 # or unreachable, we fail-secure by defaulting to BLOCKED.
 _WHOIS_TIMEOUT: float = 5.0
+
+# Strict timeout for URL shortener / redirect expansion.  We keep this even
+# tighter than WHOIS because redirect tracing is now the first step in the
+# pipeline and directly affects end-to-end latency.
+_REDIRECT_TRACE_TIMEOUT: float = 3.0
+
+# Maximum number of redirect hops we will follow while expanding a shortened
+# or obfuscated URL.  This prevents malicious infinite redirect loops from
+# stalling or crashing the scanner.
+_REDIRECT_MAX_HOPS: int = 5
 
 # Case-insensitive strings that identify a domain as genuinely owned by SBI.
 # If ANY of these appear in the WHOIS registrant org, name, or email fields,
@@ -145,6 +156,80 @@ def extract_urls(text: str) -> list[str]:
             cleaned.append(url)
 
     return cleaned
+
+
+def resolve_final_url(url: str) -> str:
+    """Resolve a potentially shortened URL to its final destination.
+
+    Fraudsters often hide phishing pages behind URL shorteners such as
+    ``bit.ly``, ``tinyurl`` or ``t.co`` so the visible link looks harmless.
+    This helper follows HTTP redirects and returns the final landing URL
+    before the heuristic engine or WHOIS checks run.
+
+    Performance and safety guards:
+      - Uses a strict 3-second timeout to protect P95 latency
+      - Limits redirect chains to 5 hops to prevent infinite loops
+      - Uses HEAD first so we only fetch headers, not the full HTML body
+      - Falls back to streamed GET for servers that do not support HEAD
+
+    If resolution fails for any reason, the original URL is returned so the
+    scanner still produces a verdict instead of crashing or dropping the scan.
+
+    Args:
+        url: The inbound URL from SMS text, QR payload, or OCR output.
+
+    Returns:
+        The final resolved URL if redirect tracing succeeds, otherwise the
+        original input URL.
+    """
+    session = requests.Session()
+    session.max_redirects = _REDIRECT_MAX_HOPS
+
+    try:
+        # HEAD is the fastest and cheapest way to expand short links because
+        # we only need redirect headers, not the destination page body.
+        response = session.head(
+            url,
+            allow_redirects=True,
+            timeout=_REDIRECT_TRACE_TIMEOUT,
+        )
+
+        # Some redirectors reject HEAD even though GET would succeed.  We use
+        # a streamed GET fallback so requests stops after headers and does not
+        # download the actual HTML body.
+        if response.status_code in {405, 501}:
+            response.close()
+            response = session.get(
+                url,
+                allow_redirects=True,
+                timeout=_REDIRECT_TRACE_TIMEOUT,
+                stream=True,
+            )
+
+        final_url = response.url or url
+        redirect_hops = len(response.history)
+
+        logger.info(
+            "Redirect trace: %s -> %s (%d hop%s)",
+            url,
+            final_url,
+            redirect_hops,
+            "" if redirect_hops == 1 else "s",
+        )
+        response.close()
+        return final_url
+
+    except requests.exceptions.RequestException as exc:
+        logger.warning(
+            "Redirect trace failed for %s (%s: %s) -> scanning original URL",
+            url,
+            type(exc).__name__,
+            exc,
+        )
+        return url
+
+    finally:
+        session.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -303,15 +388,17 @@ def scan_url(url: str) -> dict:
     """Run a URL through the full scan pipeline.
 
     Pipeline:
-      1. Parse and extract domain.
-      2. **Dynamic Whitelist** — if the domain is in ``WHITELISTED_DOMAINS``,
+      1. **Redirect Trace** — expand URL shorteners / obfuscated links to the
+         final destination URL before any security decisions are made.
+      2. Parse and extract domain from the resolved destination.
+      3. **Dynamic Whitelist** — if the domain is in ``WHITELISTED_DOMAINS``,
          return SAFE immediately (zero heuristic overhead).
-      3. **Heuristic Rules Engine** — run brand-spoofing, homoglyph, and
+      4. **Heuristic Rules Engine** — run brand-spoofing, homoglyph, and
          risky-TLD checks.
-      4. **WHOIS Fallback Verification** — if heuristics flag PHISHING,
+      5. **WHOIS Fallback Verification** — if heuristics flag PHISHING,
          perform a live WHOIS lookup to check if the registrant is actually
          SBI.  If confirmed → downgrade to GREY_ALERT.
-      5. If WHOIS doesn't confirm bank ownership (or fails/times out) →
+      6. If WHOIS doesn't confirm bank ownership (or fails/times out) →
          fail-secure as PHISHING.
 
     Args:
@@ -319,18 +406,21 @@ def scan_url(url: str) -> dict:
 
     Returns:
         A dict with keys:
-          - url:     the original URL
+          - url:     the original inbound URL
+          - resolved_url: the final URL after redirect expansion
           - domain:  the extracted domain (netloc)
           - verdict: ``"SAFE"`` | ``"GREY_ALERT"`` | ``"PHISHING"``
           - rule:    human-readable reason (for PHISHING / GREY_ALERT)
           - alert:   human-readable alert message (when applicable)
           - whois_evidence: dict (only present on GREY_ALERT downgrade)
     """
-    parsed = urlparse(url)
+    resolved_url = resolve_final_url(url)
+    parsed = urlparse(resolved_url)
     domain = parsed.netloc.lower().strip()
     if not domain:
         return {
             "url": url,
+            "resolved_url": resolved_url,
             "domain": "",
             "verdict": "PHISHING",
             "rule": "MALFORMED_URL: unable to extract domain",
@@ -348,6 +438,7 @@ def scan_url(url: str) -> dict:
         )
         return {
             "url": url,
+            "resolved_url": resolved_url,
             "domain": domain_no_port,
             "verdict": "SAFE",
             "alert": "Verified Official Domain.",
@@ -366,6 +457,7 @@ def scan_url(url: str) -> dict:
     if heuristic_reason is None:
         return {
             "url": url,
+            "resolved_url": resolved_url,
             "domain": domain_no_port,
             "verdict": "SAFE",
         }
@@ -389,6 +481,7 @@ def scan_url(url: str) -> dict:
         # yet (likely a new campaign).  Warn the user without blocking.
         return {
             "url": url,
+            "resolved_url": resolved_url,
             "domain": domain_no_port,
             "verdict": "GREY_ALERT",
             "rule": (
@@ -408,6 +501,7 @@ def scan_url(url: str) -> dict:
     # Fail-secure — maintain the original PHISHING verdict.
     return {
         "url": url,
+        "resolved_url": resolved_url,
         "domain": domain_no_port,
         "verdict": "PHISHING",
         "rule": heuristic_reason,
