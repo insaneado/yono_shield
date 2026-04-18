@@ -187,6 +187,12 @@ def process_text_message(text: str) -> tuple[str, str, list[dict]]:
 
     Returns:
         (status, alert_message, scanned_urls_list)
+
+    Status may be:
+      - ``"BLOCKED"``    — at least one URL is confirmed PHISHING
+      - ``"GREY_ALERT"`` — URL flagged by heuristics but WHOIS confirmed
+                           bank ownership (likely a new marketing domain)
+      - ``"SAFE"``       — no threats detected
     """
     urls = extract_urls(text)
 
@@ -199,6 +205,7 @@ def process_text_message(text: str) -> tuple[str, str, list[dict]]:
 
     results = [scan_url(u) for u in urls]
     has_threat = any(r["verdict"] == "PHISHING" for r in results)
+    has_grey = any(r["verdict"] == "GREY_ALERT" for r in results)
 
     if has_threat:
         return (
@@ -206,6 +213,23 @@ def process_text_message(text: str) -> tuple[str, str, list[dict]]:
             (
                 "\U0001f6a8 KAVACH ALERT: Phishing link detected. "
                 "This domain is attempting to impersonate SBI. Do not click."
+            ),
+            results,
+        )
+
+    if has_grey:
+        # Extract the custom alert from the GREY_ALERT result
+        grey_alert = next(
+            (r.get("alert", "") for r in results if r["verdict"] == "GREY_ALERT"),
+            "",
+        )
+        return (
+            "GREY_ALERT",
+            grey_alert
+            or (
+                "\u26a0\ufe0f KAVACH Notice: This is a new, unverified SBI "
+                "promotional link. We recommend claiming offers directly "
+                "inside your YONO app to stay completely safe."
             ),
             results,
         )

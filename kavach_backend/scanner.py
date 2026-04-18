@@ -1,5 +1,5 @@
 # =============================================================================
-# KAVACH — scanner.py (Omni-Scanner: URL Heuristics + QR Decoder)
+# KAVACH — scanner.py (Omni-Scanner: URL Heuristics + QR Decoder + WHOIS)
 # =============================================================================
 #
 # Stateless multi-modal scanner for the KAVACH Pre-Click Interceptor.
@@ -10,9 +10,14 @@
 #                                                        ──► scan_url()
 #   Pipeline 3 — OCR:   (stub) screenshot ──► OCR text ──► extract_urls()
 #
-# Each scan_url() call runs the URL through a chain of heuristic rules.
-# If ANY rule fires, the URL is flagged as PHISHING immediately.
-# If all rules pass, the URL is marked SAFE.
+# Verdict Flow:
+#   1. If domain is in WHITELISTED_DOMAINS → immediate SAFE
+#   2. Run heuristic rules chain (brand spoof, homoglyph, risky TLD)
+#   3. If flagged as PHISHING → WHOIS Fallback Verification:
+#      - Lookup WHOIS registrant org/name/emails
+#      - If matches known bank identifiers → downgrade to GREY_ALERT
+#      - If WHOIS fails or doesn't match → fail-secure as PHISHING
+#   4. If no rules fire → SAFE
 # =============================================================================
 
 from __future__ import annotations
@@ -20,8 +25,10 @@ from __future__ import annotations
 import io
 import logging
 import re
+import socket
 from urllib.parse import urlparse
 
+import whois
 from PIL import Image
 from pyzbar import pyzbar
 
@@ -32,7 +39,10 @@ logger = logging.getLogger("kavach.scanner")
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Official SBI domains that are SAFE and must never be flagged.
+# This is the "Dynamic Whitelist" — add new verified marketing domains here
+# as campaigns launch.  Any domain in this set bypasses all heuristic checks.
 WHITELISTED_DOMAINS: set[str] = {
+    # ── Core banking portals ──
     "onlinesbi.sbi",
     "sbiyono.sbi",
     "sbi.co.in",
@@ -41,7 +51,32 @@ WHITELISTED_DOMAINS: set[str] = {
     "www.sbiyono.sbi",
     "www.sbi.co.in",
     "www.bank.sbi",
+    # ── Verified marketing / promotional domains ──
+    "sbi-yono-offers.in",
+    "www.sbi-yono-offers.in",
+    "sbirewardz.sbi",
+    "www.sbirewardz.sbi",
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHOIS FALLBACK VERIFICATION — Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Strict timeout for WHOIS lookups (seconds).  If the global registry is slow
+# or unreachable, we fail-secure by defaulting to BLOCKED.
+_WHOIS_TIMEOUT: float = 5.0
+
+# Case-insensitive strings that identify a domain as genuinely owned by SBI.
+# If ANY of these appear in the WHOIS registrant org, name, or email fields,
+# the heuristic PHISHING verdict is downgraded to GREY_ALERT.
+WHOIS_BANK_IDENTIFIERS: list[str] = [
+    "state bank of india",
+    "sbi",
+    "sbicaps",
+    "sbi capital markets",
+    "sbi funds management",
+    "sbi cards",
+]
 
 # Brand keywords — if a domain contains any of these but is NOT whitelisted,
 # it's almost certainly a brand-spoofing attempt.
@@ -164,8 +199,120 @@ _HEURISTIC_CHAIN = [
 ]
 
 
+def _whois_verify_bank_ownership(domain: str) -> dict | None:
+    """WHOIS Fallback Verification — check if a flagged domain is owned by SBI.
+
+    Called ONLY when the heuristic engine has flagged a URL as PHISHING.
+    Performs a live WHOIS lookup to inspect the registrant's organization,
+    name, and email fields.  If any field matches a known SBI identifier,
+    the domain is likely a legitimate corporate registration that triggered
+    a false positive (e.g. a new marketing campaign domain).
+
+    Fail-secure design:
+      - Strict ``_WHOIS_TIMEOUT`` second socket timeout
+      - Any exception (network, parse, timeout) → returns None → stays BLOCKED
+
+    Args:
+        domain: The bare domain name to look up.
+
+    Returns:
+        A dict with WHOIS evidence if the domain IS owned by the bank,
+        or ``None`` if it is NOT (or if the lookup fails).
+    """
+    original_timeout = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(_WHOIS_TIMEOUT)
+        w = whois.whois(domain)
+
+        # Collect all registrant-identifying strings for matching.
+        # WHOIS data is notoriously inconsistent — fields may be str,
+        # list[str], or None depending on the registrar.
+        candidate_fields: list[str] = []
+
+        for attr in ("org", "name", "emails", "registrant_name"):
+            val = getattr(w, attr, None)
+            if val is None:
+                continue
+            if isinstance(val, str):
+                candidate_fields.append(val)
+            elif isinstance(val, list):
+                candidate_fields.extend(str(v) for v in val)
+
+        # Case-insensitive match against known bank identifiers
+        lowered = " | ".join(candidate_fields).lower()
+        for identifier in WHOIS_BANK_IDENTIFIERS:
+            if identifier in lowered:
+                logger.info(
+                    "WHOIS FALLBACK: %s matched bank identifier '%s' "
+                    "in registrant data → downgrading to GREY_ALERT",
+                    domain,
+                    identifier,
+                )
+                return {
+                    "matched_identifier": identifier,
+                    "registrar": getattr(w, "registrar", "UNKNOWN"),
+                    "org": getattr(w, "org", "UNKNOWN"),
+                    "registrant_name": getattr(w, "name", "REDACTED"),
+                }
+
+        # WHOIS succeeded but registrant does NOT match the bank
+        logger.info(
+            "WHOIS FALLBACK: %s registrant does NOT match SBI — "
+            "verdict stays PHISHING (org=%s, name=%s)",
+            domain,
+            getattr(w, "org", None),
+            getattr(w, "name", None),
+        )
+        return None
+
+    except whois.parser.PywhoisError as exc:
+        # Domain not found in WHOIS, or WHOIS server refused
+        logger.warning(
+            "WHOIS FALLBACK: lookup failed for %s (PywhoisError: %s) "
+            "→ fail-secure as PHISHING",
+            domain,
+            exc,
+        )
+        return None
+
+    except socket.timeout:
+        logger.warning(
+            "WHOIS FALLBACK: lookup timed out for %s after %ss "
+            "→ fail-secure as PHISHING",
+            domain,
+            _WHOIS_TIMEOUT,
+        )
+        return None
+
+    except Exception as exc:
+        # Catch-all: corrupt WHOIS response, network error, etc.
+        logger.warning(
+            "WHOIS FALLBACK: unexpected error for %s (%s: %s) "
+            "→ fail-secure as PHISHING",
+            domain,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    finally:
+        socket.setdefaulttimeout(original_timeout)
+
+
 def scan_url(url: str) -> dict:
-    """Run a URL through the full heuristic rules engine.
+    """Run a URL through the full scan pipeline.
+
+    Pipeline:
+      1. Parse and extract domain.
+      2. **Dynamic Whitelist** — if the domain is in ``WHITELISTED_DOMAINS``,
+         return SAFE immediately (zero heuristic overhead).
+      3. **Heuristic Rules Engine** — run brand-spoofing, homoglyph, and
+         risky-TLD checks.
+      4. **WHOIS Fallback Verification** — if heuristics flag PHISHING,
+         perform a live WHOIS lookup to check if the registrant is actually
+         SBI.  If confirmed → downgrade to GREY_ALERT.
+      5. If WHOIS doesn't confirm bank ownership (or fails/times out) →
+         fail-secure as PHISHING.
 
     Args:
         url: A single HTTP/HTTPS URL string.
@@ -174,8 +321,10 @@ def scan_url(url: str) -> dict:
         A dict with keys:
           - url:     the original URL
           - domain:  the extracted domain (netloc)
-          - verdict: "PHISHING" or "SAFE"
-          - rule:    human-readable reason (only present when PHISHING)
+          - verdict: ``"SAFE"`` | ``"GREY_ALERT"`` | ``"PHISHING"``
+          - rule:    human-readable reason (for PHISHING / GREY_ALERT)
+          - alert:   human-readable alert message (when applicable)
+          - whois_evidence: dict (only present on GREY_ALERT downgrade)
     """
     parsed = urlparse(url)
     domain = parsed.netloc.lower().strip()
@@ -190,21 +339,78 @@ def scan_url(url: str) -> dict:
     # Strip port number if present (e.g. evil.xyz:8080 → evil.xyz)
     domain_no_port = domain.split(":")[0]
 
-    # Run each heuristic rule in order — short-circuit on first hit.
+    # ── GATE 1: Dynamic Whitelist ─────────────────────────────────────────
+    # If the domain is pre-verified, skip ALL heuristic checks.
+    if domain_no_port in WHITELISTED_DOMAINS:
+        logger.info(
+            "WHITELIST HIT: %s is a verified official domain → SAFE",
+            domain_no_port,
+        )
+        return {
+            "url": url,
+            "domain": domain_no_port,
+            "verdict": "SAFE",
+            "alert": "Verified Official Domain.",
+        }
+
+    # ── GATE 2: Heuristic Rules Engine ────────────────────────────────────
+    # Run each rule in order — short-circuit on first hit.
+    heuristic_reason: str | None = None
     for rule_fn in _HEURISTIC_CHAIN:
         reason = rule_fn(domain_no_port)
         if reason is not None:
-            return {
-                "url": url,
-                "domain": domain_no_port,
-                "verdict": "PHISHING",
-                "rule": reason,
-            }
+            heuristic_reason = reason
+            break
 
+    # If no heuristic rule fired, the URL is clean.
+    if heuristic_reason is None:
+        return {
+            "url": url,
+            "domain": domain_no_port,
+            "verdict": "SAFE",
+        }
+
+    # ── GATE 3: WHOIS Fallback Verification ───────────────────────────────
+    # The heuristic engine flagged this URL.  Before blocking it, perform
+    # a live WHOIS lookup to check if the registrant is actually the bank.
+    # This prevents false positives on new legitimate SBI marketing domains.
+    logger.info(
+        "Heuristic PHISHING flag for %s (rule: %s) — running WHOIS "
+        "fallback verification...",
+        domain_no_port,
+        heuristic_reason,
+    )
+
+    whois_evidence = _whois_verify_bank_ownership(domain_no_port)
+
+    if whois_evidence is not None:
+        # ── GREY_ALERT: Downgraded verdict ────────────────────────────
+        # The domain IS registered to SBI, but it's not in our whitelist
+        # yet (likely a new campaign).  Warn the user without blocking.
+        return {
+            "url": url,
+            "domain": domain_no_port,
+            "verdict": "GREY_ALERT",
+            "rule": (
+                f"WHOIS_DOWNGRADE: heuristic rule [{heuristic_reason}] "
+                f"overridden — WHOIS registrant matches "
+                f"'{whois_evidence['matched_identifier']}'"
+            ),
+            "alert": (
+                "\u26a0\ufe0f KAVACH Notice: This is a new, unverified SBI "
+                "promotional link. We recommend claiming offers directly "
+                "inside your YONO app to stay completely safe."
+            ),
+            "whois_evidence": whois_evidence,
+        }
+
+    # ── BLOCKED: WHOIS did not confirm bank ownership ─────────────────
+    # Fail-secure — maintain the original PHISHING verdict.
     return {
         "url": url,
         "domain": domain_no_port,
-        "verdict": "SAFE",
+        "verdict": "PHISHING",
+        "rule": heuristic_reason,
     }
 
 
