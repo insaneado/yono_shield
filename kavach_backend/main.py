@@ -11,18 +11,18 @@
 #   │   GET  /webhook/whatsapp  ← Verification handshake      │
 #   │   POST /webhook/whatsapp  ← Incoming messages            │
 #   │         │                                                │
-#   │    ┌────┴─────────────────────┐                          │
-#   │    │ text msg?                │ image msg?               │
-#   │    │   │                      │   │                      │
-#   │    │ extract_urls()           │ download_media()         │
-#   │    │   │                      │   │                      │
-#   │    │ scan_url() × N           │ scan_image() (QR decode) │
-#   │    │   │                      │   │                      │
-#   │    └───┬──────────────────────┘   │                      │
-#   │        │                          │                      │
-#   │    Verdict: BLOCKED (🚨) or SAFE (✅)                    │
-#   │        │                                                 │
-#   │    send_whatsapp_reply()  ← response to user             │
+#   │    ┌────┴──────────────────┬──────────────┬──────────┐   │
+#   │    │ text msg?             │ image msg?   │ document?│   │
+#   │    │   │                   │   │          │   │      │   │
+#   │    │ extract_urls()        │ QR decode    │ APK check│   │
+#   │    │   │                   │   │          │   │      │   │
+#   │    │ scan_url() × N        │ scan_image() │ BLOCK APK│   │
+#   │    │   │                   │   │          │   │      │   │
+#   │    └───┴───────────────────┴───┘──────────┴───┘      │   │
+#   │        │                                             │   │
+#   │    Verdict: BLOCKED (🚨) or SAFE (✅)                │   │
+#   │        │                                             │   │
+#   │    send_whatsapp_reply()  ← response to user         │   │
 #   └──────────────────────────────────────────────────────────┘
 #
 # Run:
@@ -142,6 +142,36 @@ class ScanVerdict(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 # send_whatsapp_reply() and download_whatsapp_media() are imported from
 # meta_client.py — the single source of truth for all Meta Graph API logic.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DOCUMENT SIDELOAD TELEMETRY
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _log_document_threat(sender: str, detected_name: str) -> None:
+    """Background task: log a blocked document sideload attempt.
+
+    In production this would persist to the SIEM / threat-intel data lake.
+    For the MVP we emit a prominent console banner for demo visibility.
+    """
+    banner = (
+        "\n"
+        "+============================================================+\n"
+        "|     !! DOCUMENT SIDELOAD BLOCKED !!                        |\n"
+        "+============================================================+\n"
+        f"|  Sender   : {sender:<42}|\n"
+        f"|  File     : {detected_name:<42}|\n"
+        f"|  Action   : {'AUTO-BLOCKED + USER WARNED':<42}|\n"
+        f"|  Time     : {datetime.now(timezone.utc).isoformat():<42}|\n"
+        "+============================================================+\n"
+    )
+    print(banner)
+    logger.warning(
+        "[TELEMETRY] Document sideload blocked: sender=%s file=%s",
+        sender,
+        detected_name,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -311,9 +341,14 @@ async def webhook_whatsapp(
           "value": {
             "messages": [{
               "from": "919876543210",
-              "type": "text" | "image",
+              "type": "text" | "image" | "document",
               "text": { "body": "..." },
-              "image": { "id": "media_id_123", "mime_type": "image/jpeg" }
+              "image": { "id": "media_id_123", "mime_type": "image/jpeg" },
+              "document": {
+                "id": "media_id_456",
+                "filename": "update.apk",
+                "mime_type": "application/vnd.android.package-archive"
+              }
             }]
           }
         }]
@@ -422,6 +457,59 @@ async def webhook_whatsapp(
                         qr_verdict,
                         qr_result.get("qr_codes_found", 0),
                     )
+
+                # ── Route: DOCUMENT message → Pipeline 3 (APK sideload block) ──
+                elif msg_type == "document":
+                    doc_payload = msg.get("document", {})
+                    filename = (doc_payload.get("filename") or "").strip().lower()
+                    mime_type = (doc_payload.get("mime_type") or "").strip().lower()
+
+                    # Dangerous Android package extensions
+                    DANGEROUS_EXTENSIONS = (".apk", ".xapk", ".jar", ".dex")
+                    # Meta / Android MIME types for installable packages
+                    DANGEROUS_MIME_TYPES = {
+                        "application/vnd.android.package-archive",
+                        "application/java-archive",
+                        "application/x-java-archive",
+                        "application/dex",
+                    }
+
+                    is_dangerous = (
+                        any(filename.endswith(ext) for ext in DANGEROUS_EXTENSIONS)
+                        or mime_type in DANGEROUS_MIME_TYPES
+                    )
+
+                    if is_dangerous:
+                        detected_name = filename or mime_type or "unknown file"
+                        alert = (
+                            "\U0001f6a8 BLOCKED: KAVACH detected a malicious "
+                            "Android installation file (.apk). Official SBI "
+                            "apps are ONLY available via the Google Play Store. "
+                            "Never download app files directly from WhatsApp."
+                        )
+                        send_whatsapp_reply(sender, alert)
+
+                        # ── Telemetry: log the sideload attempt ──
+                        background_tasks.add_task(
+                            _log_document_threat,
+                            sender,
+                            detected_name,
+                        )
+
+                        logger.warning(
+                            "\U0001f6a8 DOCUMENT SIDELOAD BLOCKED: "
+                            "file=%s mime=%s from=%s",
+                            filename or "(no filename)",
+                            mime_type or "(no mime)",
+                            sender,
+                        )
+                    else:
+                        logger.info(
+                            "Document from %s is safe (file=%s, mime=%s)",
+                            sender,
+                            filename or "(no filename)",
+                            mime_type or "(no mime)",
+                        )
 
                 else:
                     logger.debug(

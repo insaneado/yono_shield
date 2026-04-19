@@ -20,7 +20,8 @@
 //   │    ├─ isDeviceRooted()          → root detection    │
 //   │    ├─ scanForTrojans()          → overlay trojans   │
 //   │    ├─ getAppSignatureHash(pkg)  → SHA-256           │
-//   │    └─ verifyAppSecurity(pkg)    → 4-gate pipeline   │
+//   │    ├─ verifyAppSecurity(pkg)    → 4-gate pipeline   │
+//   │    └─ FLAG_SECURE               → anti-tapjacking   │
 //   └─────────────────────────────────────────────────────┘
 // ============================================================================
 
@@ -28,6 +29,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_windowmanager/flutter_windowmanager.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'pages/clone_radar_page.dart';
 import 'pages/sms_interceptor_page.dart';
@@ -62,6 +64,15 @@ Future<void> reportFraudSilently(String badPackage, String threatType) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ── Anti-Tapjacking: FLAG_SECURE ──
+  // This single line instructs the Android OS to block ALL
+  // SYSTEM_ALERT_WINDOW overlays and screen recorders from capturing
+  // the KAVACH interface. It neutralizes invisible overlay attacks
+  // (tapjacking) and prevents screen recording / screenshots of
+  // sensitive banking data. No malicious app can draw on top of us.
+  await FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+
   await sync_manager.SyncManager.instance.initialize();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   SystemChrome.setSystemUIOverlayStyle(

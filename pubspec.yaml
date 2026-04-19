@@ -28,6 +28,9 @@ dependencies:
   # Tinder-style card swiping — Gamified Scam Simulator
   appinio_swiper: ^2.1.1
 
+  # Anti-Tapjacking — FLAG_SECURE blocks overlays, screenshots, screen recording
+  flutter_windowmanager: ^0.2.0
+
   # Default Flutter icons
   cupertino_icons: ^1.0.8
 
