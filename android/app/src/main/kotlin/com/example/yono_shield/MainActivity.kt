@@ -4,6 +4,7 @@ import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.InstallSourceInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -28,10 +29,16 @@ class MainActivity : FlutterActivity() {
         private const val SMS_PERMISSION_REQUEST = 2001
         private const val OVERLAY_PERMISSION_REQUEST = 2002
 
-        private val SAFE_ACCESSIBILITY_PACKAGES = setOf(
-            "com.google.android.marvin.talkback",
-            "com.samsung.accessibility",
-            "com.android.systemui"
+        // ── Installer Verification ──
+        // Any accessibility service installed by a trusted store is allowed.
+        // Sideloaded APKs (null / packageinstaller / file-manager) are flagged.
+        private val TRUSTED_INSTALLERS = setOf(
+            "com.android.vending",            // Google Play Store
+            "com.huawei.appmarket",            // Huawei AppGallery
+            "com.samsung.android.vending",     // Samsung Galaxy Store
+            "com.xiaomi.market",               // Xiaomi GetApps
+            "com.oppo.market",                 // OPPO App Market
+            "com.heytap.market"                // OnePlus / realme Store
         )
     }
 
@@ -395,6 +402,7 @@ class MainActivity : FlutterActivity() {
             Log.w(TAG, "AccessibilityManager unavailable; returning safe result")
             return mapOf(
                 "isThreat" to false,
+                "rogueServices" to emptyList<Map<String, Any?>>(),
                 "packageName" to null,
                 "appName" to null
             )
@@ -406,38 +414,97 @@ class MainActivity : FlutterActivity() {
 
         Log.d(TAG, "Accessibility scan: ${enabledServices.size} enabled service(s)")
 
+        val rogueServices = mutableListOf<Map<String, Any?>>()
+
         for (serviceInfo in enabledServices) {
             val resolveInfo = serviceInfo.resolveInfo ?: continue
             val serviceMeta = resolveInfo.serviceInfo ?: continue
-            val packageName = serviceMeta.packageName ?: continue
+            val pkgName = serviceMeta.packageName ?: continue
 
-            if (SAFE_ACCESSIBILITY_PACKAGES.contains(packageName)) {
-                Log.d(TAG, "Accessibility whitelist hit: $packageName")
+            // ── Installer Verification ──
+            val installer = getInstallerForPackage(pkgName)
+            val isTrusted = installer != null && TRUSTED_INSTALLERS.contains(installer)
+
+            if (isTrusted) {
+                Log.d(TAG, "Accessibility SAFE (store-installed): $pkgName [installer=$installer]")
                 continue
             }
 
+            // Sideloaded app with active Accessibility Service → THREAT
             val applicationInfo = serviceMeta.applicationInfo
             val appName = try {
                 packageManager.getApplicationLabel(applicationInfo).toString().ifBlank {
-                    packageName
+                    pkgName
                 }
             } catch (_: Exception) {
-                packageName
+                pkgName
+            }
+            val serviceLabel = try {
+                resolveInfo.loadLabel(packageManager).toString()
+            } catch (_: Exception) {
+                pkgName
             }
 
-            Log.w(TAG, "ROGUE ACCESSIBILITY SERVICE DETECTED: $packageName")
+            Log.w(
+                TAG,
+                "ROGUE ACCESSIBILITY SERVICE (sideloaded): $pkgName " +
+                    "[installer=${installer ?: "null"}, service=$serviceLabel]"
+            )
+
+            rogueServices.add(
+                mapOf(
+                    "packageName" to pkgName,
+                    "appName" to appName,
+                    "serviceName" to serviceLabel,
+                    "installer" to (installer ?: "UNKNOWN")
+                )
+            )
+        }
+
+        if (rogueServices.isNotEmpty()) {
+            // Return the first rogue service as the primary threat
+            // and attach the full list for telemetry logging.
+            val primary = rogueServices.first()
             return mapOf(
                 "isThreat" to true,
-                "packageName" to packageName,
-                "appName" to appName,
-                "serviceName" to resolveInfo.loadLabel(packageManager).toString()
+                "packageName" to primary["packageName"],
+                "appName" to primary["appName"],
+                "serviceName" to primary["serviceName"],
+                "installer" to primary["installer"],
+                "rogueServices" to rogueServices
             )
         }
 
         return mapOf(
             "isThreat" to false,
+            "rogueServices" to emptyList<Map<String, Any?>>(),
             "packageName" to null,
             "appName" to null
         )
+    }
+
+    /**
+     * Returns the installer package name for [pkgName], handling the
+     * API 30+ (InstallSourceInfo) vs legacy (getInstallerPackageName) split.
+     * Returns null if the installer cannot be determined (= sideloaded APK).
+     */
+    @Suppress("DEPRECATION")
+    private fun getInstallerForPackage(pkgName: String): String? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val sourceInfo: InstallSourceInfo =
+                    packageManager.getInstallSourceInfo(pkgName)
+                // installingPackageName is the store that performed the install.
+                sourceInfo.installingPackageName
+            } else {
+                packageManager.getInstallerPackageName(pkgName)
+            }
+        } catch (e: PackageManager.NameNotFoundException) {
+            Log.w(TAG, "getInstallerForPackage: $pkgName not found", e)
+            null
+        } catch (e: Exception) {
+            Log.w(TAG, "getInstallerForPackage: $pkgName failed", e)
+            null
+        }
     }
 }

@@ -204,18 +204,33 @@ class _SecurityDashboardState extends State<SecurityDashboard>
               : packageName.isNotEmpty
               ? packageName
               : 'Unknown app';
+      final installer = scanResult.installer ?? 'UNKNOWN';
+
+      // ── Log every rogue service to the SQLite Telemetry Vault ──
+      for (final rogue in scanResult.rogueServices) {
+        unawaited(
+          reportFraudSilently(
+            rogue.packageName,
+            'ROGUE_ACCESSIBILITY_SERVICE',
+          ),
+        );
+      }
 
       await _showThreatAlertAsync({
         'verdict': 'ROGUE_ACCESSIBILITY_SERVICE',
         'packageName': packageName,
         'appName': appName,
         'serviceName': scanResult.serviceName,
+        'installer': installer,
+        'rogueCount': scanResult.rogueServices.length,
         'isRooted': false,
         'trojanApp': null,
         'liveHash': null,
         'expectedHash': 'UNAVAILABLE',
         'message':
-            "'$appName' is using Android accessibility access to monitor or control your screen. Disable or uninstall it immediately before using YONO.",
+            "'$appName' was sideloaded (installer: $installer) and is using "
+            "Android accessibility access to monitor or control your screen. "
+            "Disable or uninstall it immediately before using YONO.",
       });
     } catch (error) {
       debugPrint('Accessibility resume scan failed: $error');
