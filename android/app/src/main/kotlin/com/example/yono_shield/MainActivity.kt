@@ -1,6 +1,7 @@
 package com.example.yono_shield
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
@@ -9,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import android.view.accessibility.AccessibilityManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -22,8 +24,15 @@ class MainActivity : FlutterActivity() {
         private const val TAG = "YonoShield:Main"
         private const val METHOD_CHANNEL = "com.yonoshield.security/bridge"
         private const val EVENT_CHANNEL = "com.yonoshield.security/sms_stream"
+        private const val ACCESSIBILITY_CHANNEL = "kavach.security/accessibility"
         private const val SMS_PERMISSION_REQUEST = 2001
         private const val OVERLAY_PERMISSION_REQUEST = 2002
+
+        private val SAFE_ACCESSIBILITY_PACKAGES = setOf(
+            "com.google.android.marvin.talkback",
+            "com.samsung.accessibility",
+            "com.android.systemui"
+        )
     }
 
     private val securityManager by lazy(LazyThreadSafetyMode.NONE) {
@@ -311,6 +320,26 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ACCESSIBILITY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "checkRogueAccessibility" -> {
+                        try {
+                            result.success(checkRogueAccessibility())
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Accessibility hijack scan failed", e)
+                            result.error(
+                                "ACCESSIBILITY_SCAN_ERROR",
+                                "Accessibility scan failed: ${e.message}",
+                                null
+                            )
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
@@ -356,5 +385,59 @@ class MainActivity : FlutterActivity() {
             is Map<*, *> -> securityResult["verdict"] as? String ?: "UNKNOWN"
             else -> "UNKNOWN"
         }
+    }
+
+    private fun checkRogueAccessibility(): Map<String, Any?> {
+        val accessibilityManager =
+            getSystemService(ACCESSIBILITY_SERVICE) as? AccessibilityManager
+
+        if (accessibilityManager == null) {
+            Log.w(TAG, "AccessibilityManager unavailable; returning safe result")
+            return mapOf(
+                "isThreat" to false,
+                "packageName" to null,
+                "appName" to null
+            )
+        }
+
+        val enabledServices = accessibilityManager.getEnabledAccessibilityServiceList(
+            AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        )
+
+        Log.d(TAG, "Accessibility scan: ${enabledServices.size} enabled service(s)")
+
+        for (serviceInfo in enabledServices) {
+            val resolveInfo = serviceInfo.resolveInfo ?: continue
+            val serviceMeta = resolveInfo.serviceInfo ?: continue
+            val packageName = serviceMeta.packageName ?: continue
+
+            if (SAFE_ACCESSIBILITY_PACKAGES.contains(packageName)) {
+                Log.d(TAG, "Accessibility whitelist hit: $packageName")
+                continue
+            }
+
+            val applicationInfo = serviceMeta.applicationInfo
+            val appName = try {
+                packageManager.getApplicationLabel(applicationInfo).toString().ifBlank {
+                    packageName
+                }
+            } catch (_: Exception) {
+                packageName
+            }
+
+            Log.w(TAG, "ROGUE ACCESSIBILITY SERVICE DETECTED: $packageName")
+            return mapOf(
+                "isThreat" to true,
+                "packageName" to packageName,
+                "appName" to appName,
+                "serviceName" to resolveInfo.loadLabel(packageManager).toString()
+            )
+        }
+
+        return mapOf(
+            "isThreat" to false,
+            "packageName" to null,
+            "appName" to null
+        )
     }
 }

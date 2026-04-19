@@ -25,25 +25,25 @@
 // ============================================================================
 
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:http/http.dart' as http;
 import 'pages/clone_radar_page.dart';
 import 'pages/sms_interceptor_page.dart';
 import 'pages/overlay_control_page.dart';
 import 'pages/scam_game_page.dart';
+import 'services/accessibility_scanner.dart';
+import 'services/sync_manager.dart' as sync_manager;
 import 'widgets/red_alert_overlay.dart';
 
 Future<void> reportFraudSilently(String badPackage, String threatType) async {
   // ── KAVACH Telemetry Bridge ──
   // For Android Emulator → host machine: http://10.0.2.2:8080/api/telemetry
   // For Ngrok tunnel (demo): https://YOUR_NGROK_ID.ngrok-free.app/api/telemetry
-  const telemetryUrl = 'http://10.0.2.2:8080/api/telemetry';
+  await sync_manager.reportFraudSilently(badPackage, threatType);
 
-  try {
+  /*
     await http.post(
       Uri.parse(telemetryUrl),
       headers: const {'Content-Type': 'application/json'},
@@ -57,11 +57,12 @@ Future<void> reportFraudSilently(String badPackage, String threatType) async {
   } catch (_) {
     // Silent by design — backend may be offline during demo.
     // The Red Alert UI must never freeze for a network call.
-  }
+  */
 }
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await sync_manager.SyncManager.instance.initialize();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
@@ -113,15 +114,20 @@ class SecurityDashboard extends StatefulWidget {
 }
 
 class _SecurityDashboardState extends State<SecurityDashboard>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
+  final AccessibilityScanner _accessibilityScanner = AccessibilityScanner();
+
   int _tab = 0;
   late PageController _pageCtrl;
   late AnimationController _shieldPulse;
   late Animation<double> _glow;
+  bool _isAccessibilityScanInFlight = false;
+  bool _isThreatAlertOpen = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _pageCtrl = PageController();
     _shieldPulse = AnimationController(
       duration: const Duration(seconds: 3),
@@ -131,13 +137,24 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       begin: 0.4,
       end: 1.0,
     ).animate(CurvedAnimation(parent: _shieldPulse, curve: Curves.easeInOut));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_scanAccessibilityOnResume());
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pageCtrl.dispose();
     _shieldPulse.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_scanAccessibilityOnResume());
+    }
   }
 
   void _goTab(int i) {
@@ -152,7 +169,59 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   // ── Called by RadarPage when a threat is detected ──
   // Delegates to the standalone RedAlertOverlay widget.
   void _showThreatAlert(Map<String, dynamic> result) {
-    showRedAlertOverlay(context, result);
+    unawaited(_showThreatAlertAsync(result));
+  }
+
+  Future<void> _showThreatAlertAsync(Map<String, dynamic> result) async {
+    if (!mounted || _isThreatAlertOpen) {
+      return;
+    }
+
+    _isThreatAlertOpen = true;
+    try {
+      await showRedAlertOverlay(context, result);
+    } finally {
+      _isThreatAlertOpen = false;
+    }
+  }
+
+  Future<void> _scanAccessibilityOnResume() async {
+    if (!mounted || _isAccessibilityScanInFlight || _isThreatAlertOpen) {
+      return;
+    }
+
+    _isAccessibilityScanInFlight = true;
+    try {
+      final scanResult = await _accessibilityScanner.scanForHijack();
+      if (!mounted || !scanResult.isThreat) {
+        return;
+      }
+
+      final packageName = scanResult.packageName?.trim() ?? '';
+      final appName =
+          scanResult.appName?.trim().isNotEmpty == true
+              ? scanResult.appName!.trim()
+              : packageName.isNotEmpty
+              ? packageName
+              : 'Unknown app';
+
+      await _showThreatAlertAsync({
+        'verdict': 'ROGUE_ACCESSIBILITY_SERVICE',
+        'packageName': packageName,
+        'appName': appName,
+        'serviceName': scanResult.serviceName,
+        'isRooted': false,
+        'trojanApp': null,
+        'liveHash': null,
+        'expectedHash': 'UNAVAILABLE',
+        'message':
+            "'$appName' is using Android accessibility access to monitor or control your screen. Disable or uninstall it immediately before using YONO.",
+      });
+    } catch (error) {
+      debugPrint('Accessibility resume scan failed: $error');
+    } finally {
+      _isAccessibilityScanInFlight = false;
+    }
   }
 
   @override

@@ -18,17 +18,16 @@
 // ============================================================================
 
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:http/http.dart' as http;
 import '../services/security_bridge.dart';
+import '../services/sync_manager.dart' as sync_manager;
 
 // ── Telemetry helper (silent, fire-and-forget) ──
 Future<void> _reportFraudSilently(String badPackage, String threatType) async {
-  const telemetryUrl = 'http://10.0.2.2:8080/api/telemetry';
-  try {
+  await sync_manager.reportFraudSilently(badPackage, threatType);
+  /*
     await http.post(
       Uri.parse(telemetryUrl),
       headers: const {'Content-Type': 'application/json'},
@@ -41,19 +40,29 @@ Future<void> _reportFraudSilently(String badPackage, String threatType) async {
     );
   } catch (_) {
     // Silent — backend may be offline during demo.
-  }
+  */
 }
 
 // ============================================================================
 // CONVENIENCE LAUNCHER — call from any page to show the Red Alert
 // ============================================================================
-void showRedAlertOverlay(BuildContext context, Map<String, dynamic> result) {
+Future<T?> showRedAlertOverlay<T>(
+  BuildContext context,
+  Map<String, dynamic> result,
+) {
   final verdict = result['verdict'] as String? ?? '';
-  final trojanAppName = verdict.startsWith('TROJAN_DETECTED_')
-      ? ((result['trojanApp'] as String?)?.trim().isNotEmpty ?? false)
-          ? (result['trojanApp'] as String).trim()
-          : verdict.split('TROJAN_DETECTED_').last.trim()
-      : null;
+  final trojanAppName =
+      verdict.startsWith('TROJAN_DETECTED_')
+          ? ((result['trojanApp'] as String?)?.trim().isNotEmpty ?? false)
+              ? (result['trojanApp'] as String).trim()
+              : verdict.split('TROJAN_DETECTED_').last.trim()
+          : null;
+  final rogueAccessibilityApp =
+      verdict == 'ROGUE_ACCESSIBILITY_SERVICE'
+          ? ((result['appName'] as String?)?.trim().isNotEmpty ?? false)
+              ? (result['appName'] as String).trim()
+              : (result['packageName'] as String?)?.trim()
+          : null;
 
   late String alertTitle;
   late String alertSubtitle;
@@ -67,6 +76,15 @@ void showRedAlertOverlay(BuildContext context, Map<String, dynamic> result) {
         "\u{1F6A8} TROJAN DETECTED: '$trojanAppName' has malicious "
         'screen-reading permissions. Uninstall immediately to unlock YONO.';
     alertIcon = Icons.pest_control_rounded;
+  } else if (rogueAccessibilityApp != null &&
+      rogueAccessibilityApp.isNotEmpty) {
+    alertTitle = 'CRITICAL';
+    alertSubtitle = 'ACCESSIBILITY HIJACK';
+    alertMessage =
+        "\u{1F6A8} ACCESSIBILITY ALERT: '$rogueAccessibilityApp' can read "
+        'your screen and control taps using Android accessibility access. '
+        'Disable or uninstall it immediately before using YONO.';
+    alertIcon = Icons.pan_tool_alt_rounded;
   } else {
     switch (verdict) {
       case 'ROOTED_DEVICE':
@@ -103,22 +121,24 @@ void showRedAlertOverlay(BuildContext context, Map<String, dynamic> result) {
     }
   }
 
-  showGeneralDialog(
+  return showGeneralDialog<T>(
     context: context,
     barrierDismissible: false,
     barrierColor: Colors.black87,
     transitionDuration: const Duration(milliseconds: 400),
-    transitionBuilder: (ctx, a1, a2, child) => FadeTransition(
-      opacity: a1,
-      child: ScaleTransition(scale: a1, child: child),
-    ),
-    pageBuilder: (ctx, _, __) => RedAlertOverlay(
-      title: alertTitle,
-      subtitle: alertSubtitle,
-      message: alertMessage,
-      icon: alertIcon,
-      result: result,
-    ),
+    transitionBuilder:
+        (ctx, a1, a2, child) => FadeTransition(
+          opacity: a1,
+          child: ScaleTransition(scale: a1, child: child),
+        ),
+    pageBuilder:
+        (ctx, _, __) => RedAlertOverlay(
+          title: alertTitle,
+          subtitle: alertSubtitle,
+          message: alertMessage,
+          icon: alertIcon,
+          result: result,
+        ),
   );
 }
 
@@ -168,18 +188,20 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
       duration: const Duration(milliseconds: 800),
       vsync: this,
     )..repeat(reverse: true);
-    _pulseAnim = Tween<double>(begin: 0.6, end: 1.0).animate(
-      CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-    );
+    _pulseAnim = Tween<double>(
+      begin: 0.6,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
 
     // Dedicated speaker button pulse — slower, more attention-grabbing
     _speakerPulse = AnimationController(
       duration: const Duration(milliseconds: 1200),
       vsync: this,
     )..repeat(reverse: true);
-    _speakerScale = Tween<double>(begin: 0.92, end: 1.08).animate(
-      CurvedAnimation(parent: _speakerPulse, curve: Curves.easeInOut),
-    );
+    _speakerScale = Tween<double>(
+      begin: 0.92,
+      end: 1.08,
+    ).animate(CurvedAnimation(parent: _speakerPulse, curve: Curves.easeInOut));
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _reportThreatOnce();
@@ -211,6 +233,11 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
       final trojanApp = widget.result['trojanApp']?.toString() ?? 'this app';
       return 'Warning. $trojanApp is trying to read your screen to steal your '
           'OTP. Please press the uninstall button below.';
+    }
+    if (verdict == 'ROGUE_ACCESSIBILITY_SERVICE') {
+      final rogueApp = widget.result['appName']?.toString() ?? 'this app';
+      return 'Warning. $rogueApp can read your screen and press buttons on '
+          'your phone. Please delete it before opening YONO.';
     }
     if (verdict == 'ROOTED_DEVICE') {
       return 'Warning. Your phone has been modified. This makes your banking '
@@ -279,11 +306,12 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
   Widget build(BuildContext context) {
     final r = widget.result;
     final verdict = r['verdict'] as String? ?? '';
-    final trojanApp = verdict.startsWith('TROJAN_DETECTED_')
-        ? ((r['trojanApp'] as String?)?.trim().isNotEmpty ?? false)
-            ? (r['trojanApp'] as String).trim()
-            : verdict.split('TROJAN_DETECTED_').last.trim()
-        : null;
+    final trojanApp =
+        verdict.startsWith('TROJAN_DETECTED_')
+            ? ((r['trojanApp'] as String?)?.trim().isNotEmpty ?? false)
+                ? (r['trojanApp'] as String).trim()
+                : verdict.split('TROJAN_DETECTED_').last.trim()
+            : null;
     final uninstallPackage = _threatPackageName(r);
     final canUninstallThreat =
         uninstallPackage.isNotEmpty && verdict != 'ROOTED_DEVICE';
@@ -294,117 +322,121 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
       color: Colors.transparent,
       child: AnimatedBuilder(
         animation: _pulseAnim,
-        builder: (_, __) => Container(
-          width: double.infinity,
-          height: double.infinity,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                const Color(0xFF1A0000),
-                Color.lerp(
-                  const Color(0xFF4D0000),
-                  const Color(0xFF990000),
-                  _pulseAnim.value,
-                )!,
-                const Color(0xFFCC0000),
-              ],
-            ),
-          ),
-          child: SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 20),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const SizedBox(height: 12),
-
-                  // ── Warning icon with glow ──
-                  _buildMainIcon(),
-                  const SizedBox(height: 24),
-
-                  // ── Title ──
-                  Text(
-                    widget.title,
-                    style: GoogleFonts.orbitron(
-                      color: Colors.white,
-                      fontSize: 28,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 4,
-                    ),
+        builder:
+            (_, __) => Container(
+              width: double.infinity,
+              height: double.infinity,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    const Color(0xFF1A0000),
+                    Color.lerp(
+                      const Color(0xFF4D0000),
+                      const Color(0xFF990000),
+                      _pulseAnim.value,
+                    )!,
+                    const Color(0xFFCC0000),
+                  ],
+                ),
+              ),
+              child: SafeArea(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 20,
                   ),
-                  const SizedBox(height: 10),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(height: 12),
 
-                  // ── Subtitle badge ──
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: Colors.white.withOpacity(0.15),
-                    ),
-                    child: Text(
-                      widget.subtitle,
-                      style: GoogleFonts.orbitron(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 2,
+                      // ── Warning icon with glow ──
+                      _buildMainIcon(),
+                      const SizedBox(height: 24),
+
+                      // ── Title ──
+                      Text(
+                        widget.title,
+                        style: GoogleFonts.orbitron(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 4,
+                        ),
                       ),
-                    ),
+                      const SizedBox(height: 10),
+
+                      // ── Subtitle badge ──
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.white.withOpacity(0.15),
+                        ),
+                        child: Text(
+                          widget.subtitle,
+                          style: GoogleFonts.orbitron(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
+                      // ── Large Universal Icons Row ──
+                      _buildUniversalIcons(verdict),
+                      const SizedBox(height: 20),
+
+                      // ── MASSIVE PLAY AUDIO BUTTON ──
+                      _buildPlayAudioButton(),
+                      const SizedBox(height: 20),
+
+                      // ── Message body ──
+                      Text(
+                        widget.message,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.85),
+                          fontSize: 13,
+                          height: 1.6,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
+                      // ── Hash details (INVALID_SIGNATURE only) ──
+                      if (verdict == 'INVALID_SIGNATURE' &&
+                          liveHash != null &&
+                          expectedHash != null)
+                        _buildHashDetails(r, liveHash, expectedHash),
+
+                      // ── Root details (ROOTED_DEVICE only) ──
+                      if (verdict == 'ROOTED_DEVICE') _buildRootDetails(),
+
+                      // ── Trojan details ──
+                      if (trojanApp != null && trojanApp.isNotEmpty)
+                        _buildTrojanDetails(trojanApp),
+
+                      const SizedBox(height: 28),
+
+                      // ── UNINSTALL THREAT NOW button ──
+                      if (canUninstallThreat)
+                        _buildUninstallButton(uninstallPackage),
+
+                      // ── Dismiss button ──
+                      _buildDismissButton(),
+                      const SizedBox(height: 16),
+                    ],
                   ),
-                  const SizedBox(height: 24),
-
-                  // ── Large Universal Icons Row ──
-                  _buildUniversalIcons(verdict),
-                  const SizedBox(height: 20),
-
-                  // ── MASSIVE PLAY AUDIO BUTTON ──
-                  _buildPlayAudioButton(),
-                  const SizedBox(height: 20),
-
-                  // ── Message body ──
-                  Text(
-                    widget.message,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.85),
-                      fontSize: 13,
-                      height: 1.6,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  // ── Hash details (INVALID_SIGNATURE only) ──
-                  if (verdict == 'INVALID_SIGNATURE' &&
-                      liveHash != null &&
-                      expectedHash != null)
-                    _buildHashDetails(r, liveHash, expectedHash),
-
-                  // ── Root details (ROOTED_DEVICE only) ──
-                  if (verdict == 'ROOTED_DEVICE') _buildRootDetails(),
-
-                  // ── Trojan details ──
-                  if (trojanApp != null && trojanApp.isNotEmpty)
-                    _buildTrojanDetails(trojanApp),
-
-                  const SizedBox(height: 28),
-
-                  // ── UNINSTALL THREAT NOW button ──
-                  if (canUninstallThreat)
-                    _buildUninstallButton(uninstallPackage),
-
-                  // ── Dismiss button ──
-                  _buildDismissButton(),
-                  const SizedBox(height: 16),
-                ],
+                ),
               ),
             ),
-          ),
-        ),
       ),
     );
   }
@@ -413,23 +445,25 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
   Widget _buildMainIcon() {
     return AnimatedBuilder(
       animation: _pulseAnim,
-      builder: (_, __) => Container(
-        width: 110,
-        height: 110,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: Colors.red.withOpacity(0.2),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFFFF4D4D)
-                  .withOpacity(0.4 * _pulseAnim.value),
-              blurRadius: 40,
-              spreadRadius: 10,
+      builder:
+          (_, __) => Container(
+            width: 110,
+            height: 110,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.red.withOpacity(0.2),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(
+                    0xFFFF4D4D,
+                  ).withOpacity(0.4 * _pulseAnim.value),
+                  blurRadius: 40,
+                  spreadRadius: 10,
+                ),
+              ],
             ),
-          ],
-        ),
-        child: Icon(widget.icon, color: Colors.white, size: 60),
-      ),
+            child: Icon(widget.icon, color: Colors.white, size: 60),
+          ),
     );
   }
 
@@ -449,20 +483,16 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
             verdict.startsWith('TROJAN_DETECTED_')
                 ? Icons.pest_control_rounded
                 : verdict == 'ROOTED_DEVICE'
-                    ? Icons.phonelink_lock_rounded
-                    : Icons.person_off_rounded,
+                ? Icons.phonelink_lock_rounded
+                : Icons.person_off_rounded,
             verdict.startsWith('TROJAN_DETECTED_')
                 ? 'THIEF APP'
                 : verdict == 'ROOTED_DEVICE'
-                    ? 'UNSAFE'
-                    : 'FAKE APP',
+                ? 'UNSAFE'
+                : 'FAKE APP',
             Colors.white,
           ),
-          _universalIcon(
-            Icons.lock_rounded,
-            'LOCKED',
-            const Color(0xFFFFD93D),
-          ),
+          _universalIcon(Icons.lock_rounded, 'LOCKED', const Color(0xFFFFD93D)),
         ],
       ),
     );
@@ -474,81 +504,84 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
       onTap: _speakWarning,
       child: AnimatedBuilder(
         animation: _speakerScale,
-        builder: (_, __) => Transform.scale(
-          scale: _speakerScale.value,
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 22),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              gradient: LinearGradient(
-                colors: _isSpeaking
-                    ? [
-                        const Color(0xFFFF6B00).withOpacity(0.35),
-                        const Color(0xFFFF3300).withOpacity(0.20),
-                      ]
-                    : [
-                        Colors.white.withOpacity(0.20),
-                        Colors.white.withOpacity(0.08),
-                      ],
-              ),
-              border: Border.all(
-                color: _isSpeaking
-                    ? const Color(0xFFFF6B00).withOpacity(0.6)
-                    : Colors.white.withOpacity(0.35),
-                width: 2.5,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: (_isSpeaking
-                          ? const Color(0xFFFF6B00)
-                          : Colors.white)
-                      .withOpacity(0.15 * _speakerScale.value),
-                  blurRadius: 30,
-                  spreadRadius: 4,
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // Massive speaker icon
-                Icon(
-                  _isSpeaking
-                      ? Icons.stop_circle_rounded
-                      : Icons.volume_up_rounded,
-                  color: Colors.white,
-                  size: 48,
-                ),
-                const SizedBox(width: 16),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _isSpeaking ? 'STOP AUDIO' : 'PLAY AUDIO WARNING',
-                      style: GoogleFonts.orbitron(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.5,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      _isSpeaking
-                          ? '🔊 Speaking… Tap to stop'
-                          : '🔊 Tap to hear this warning',
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.6),
-                        fontSize: 11,
-                      ),
+        builder:
+            (_, __) => Transform.scale(
+              scale: _speakerScale.value,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 22),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  gradient: LinearGradient(
+                    colors:
+                        _isSpeaking
+                            ? [
+                              const Color(0xFFFF6B00).withOpacity(0.35),
+                              const Color(0xFFFF3300).withOpacity(0.20),
+                            ]
+                            : [
+                              Colors.white.withOpacity(0.20),
+                              Colors.white.withOpacity(0.08),
+                            ],
+                  ),
+                  border: Border.all(
+                    color:
+                        _isSpeaking
+                            ? const Color(0xFFFF6B00).withOpacity(0.6)
+                            : Colors.white.withOpacity(0.35),
+                    width: 2.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: (_isSpeaking
+                              ? const Color(0xFFFF6B00)
+                              : Colors.white)
+                          .withOpacity(0.15 * _speakerScale.value),
+                      blurRadius: 30,
+                      spreadRadius: 4,
                     ),
                   ],
                 ),
-              ],
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // Massive speaker icon
+                    Icon(
+                      _isSpeaking
+                          ? Icons.stop_circle_rounded
+                          : Icons.volume_up_rounded,
+                      color: Colors.white,
+                      size: 48,
+                    ),
+                    const SizedBox(width: 16),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _isSpeaking ? 'STOP AUDIO' : 'PLAY AUDIO WARNING',
+                          style: GoogleFonts.orbitron(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          _isSpeaking
+                              ? '🔊 Speaking… Tap to stop'
+                              : '🔊 Tap to hear this warning',
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.6),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
-        ),
       ),
     );
   }
@@ -642,75 +675,81 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: GestureDetector(
-        onTap: _isLaunchingUninstall
-            ? null
-            : () => _uninstallThreat(uninstallPackage),
+        onTap:
+            _isLaunchingUninstall
+                ? null
+                : () => _uninstallThreat(uninstallPackage),
         child: AnimatedBuilder(
           animation: _pulseAnim,
-          builder: (_, __) => Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              gradient: LinearGradient(
-                colors: [
-                  const Color(0xFFFF4D4D),
-                  Color.lerp(
-                    const Color(0xFFFF6B00),
-                    const Color(0xFFFF3300),
-                    _pulseAnim.value,
-                  )!,
-                ],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFFFF4D4D)
-                      .withOpacity(0.5 * _pulseAnim.value),
-                  blurRadius: 20,
-                  spreadRadius: 2,
-                  offset: const Offset(0, 4),
+          builder:
+              (_, __) => Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 18),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  gradient: LinearGradient(
+                    colors: [
+                      const Color(0xFFFF4D4D),
+                      Color.lerp(
+                        const Color(0xFFFF6B00),
+                        const Color(0xFFFF3300),
+                        _pulseAnim.value,
+                      )!,
+                    ],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(
+                        0xFFFF4D4D,
+                      ).withOpacity(0.5 * _pulseAnim.value),
+                      blurRadius: 20,
+                      spreadRadius: 2,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (_isLaunchingUninstall) ...[
-                  const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    'LAUNCHING UNINSTALLER…',
-                    style: GoogleFonts.orbitron(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ] else ...[
-                  const Icon(Icons.delete_forever_rounded,
-                      color: Colors.white, size: 22),
-                  const SizedBox(width: 10),
-                  Text(
-                    'UNINSTALL THREAT NOW',
-                    style: GoogleFonts.orbitron(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (_isLaunchingUninstall) ...[
+                      const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        'LAUNCHING UNINSTALLER…',
+                        style: GoogleFonts.orbitron(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ] else ...[
+                      const Icon(
+                        Icons.delete_forever_rounded,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        'UNINSTALL THREAT NOW',
+                        style: GoogleFonts.orbitron(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
         ),
       ),
     );
@@ -757,59 +796,59 @@ class _RedAlertOverlayState extends State<RedAlertOverlay>
   // ── Helper widgets ──
 
   Widget _detailRow(String label, String value) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 90,
-            child: Text(
-              label,
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.5),
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1,
-              ),
-            ),
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      SizedBox(
+        width: 90,
+        child: Text(
+          label,
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.5),
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1,
           ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+        ),
+      ),
+      Expanded(
+        child: Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
           ),
-        ],
-      );
+        ),
+      ),
+    ],
+  );
 
   Widget _hashDetail(String label, String hash) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.4),
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1.5,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            hash,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.7),
-              fontSize: 10,
-              fontFamily: 'monospace',
-              height: 1.4,
-            ),
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      );
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        label,
+        style: TextStyle(
+          color: Colors.white.withOpacity(0.4),
+          fontSize: 9,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.5,
+        ),
+      ),
+      const SizedBox(height: 4),
+      Text(
+        hash,
+        style: TextStyle(
+          color: Colors.white.withOpacity(0.7),
+          fontSize: 10,
+          fontFamily: 'monospace',
+          height: 1.4,
+        ),
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+      ),
+    ],
+  );
 
   Widget _universalIcon(IconData icon, String label, Color color) {
     return Column(
