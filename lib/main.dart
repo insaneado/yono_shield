@@ -21,6 +21,9 @@
 //   │    ├─ scanForTrojans()          → overlay trojans   │
 //   │    ├─ getAppSignatureHash(pkg)  → SHA-256           │
 //   │    ├─ verifyAppSecurity(pkg)    → 4-gate pipeline   │
+//   │    ├─ checkRogueAccessibility   → Loophole 4        │
+//   │    ├─ checkRogueNotifListeners  → Loophole 7        │
+//   │    ├─ DeviceIntegrity           → Loophole 8        │
 //   │    └─ FLAG_SECURE               → anti-tapjacking   │
 //   └─────────────────────────────────────────────────────┘
 // ============================================================================
@@ -36,6 +39,8 @@ import 'pages/sms_interceptor_page.dart';
 import 'pages/overlay_control_page.dart';
 import 'pages/scam_game_page.dart';
 import 'services/accessibility_scanner.dart';
+import 'services/device_integrity.dart';
+import 'services/notification_scanner.dart';
 import 'services/sync_manager.dart' as sync_manager;
 import 'widgets/red_alert_overlay.dart';
 
@@ -127,13 +132,17 @@ class SecurityDashboard extends StatefulWidget {
 class _SecurityDashboardState extends State<SecurityDashboard>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   final AccessibilityScanner _accessibilityScanner = AccessibilityScanner();
+  final NotificationScanner _notificationScanner = NotificationScanner();
+  final DeviceIntegrity _deviceIntegrity = DeviceIntegrity();
 
   int _tab = 0;
   late PageController _pageCtrl;
   late AnimationController _shieldPulse;
   late Animation<double> _glow;
-  bool _isAccessibilityScanInFlight = false;
+  bool _isSecurityScanInFlight = false;
   bool _isThreatAlertOpen = false;
+  bool _isDeviceCompromised = false;
+  String _compromiseReason = '';
 
   @override
   void initState() {
@@ -149,7 +158,11 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       end: 1.0,
     ).animate(CurvedAnimation(parent: _shieldPulse, curve: Curves.easeInOut));
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_scanAccessibilityOnResume());
+      // ── GATE 0: Device Integrity (Root/Jailbreak) ──
+      // Must run FIRST, before any other security check.
+      // If the device is compromised, show a permanent black screen
+      // and suspend ALL banking operations.
+      unawaited(_checkDeviceIntegrity());
     });
   }
 
@@ -164,7 +177,9 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(_scanAccessibilityOnResume());
+      // Re-check device integrity on every resume (user may have rooted
+      // while the app was in background).
+      unawaited(_checkDeviceIntegrity());
     }
   }
 
@@ -196,17 +211,63 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     }
   }
 
-  Future<void> _scanAccessibilityOnResume() async {
-    if (!mounted || _isAccessibilityScanInFlight || _isThreatAlertOpen) {
+  // ── GATE 0: Device Integrity Check (Root/Jailbreak) ──
+  // If the device is compromised, render a permanent black screen.
+  // This cannot be dismissed — banking is fully suspended.
+  Future<void> _checkDeviceIntegrity() async {
+    if (!mounted || _isDeviceCompromised) return;
+
+    try {
+      final result = await _deviceIntegrity.verifyDeviceIntegrity();
+      if (!mounted) return;
+
+      if (!result.isIntact) {
+        setState(() {
+          _isDeviceCompromised = true;
+          _compromiseReason = result.failureReason ?? 'Unknown compromise';
+        });
+
+        // Log to telemetry
+        unawaited(
+          reportFraudSilently('DEVICE_OS', 'ROOTED_DEVICE'),
+        );
+        return;
+      }
+    } catch (error) {
+      debugPrint('Device integrity check failed: \$error');
+    }
+
+    // Device is clean — proceed to runtime security scans
+    unawaited(_runSecurityScansOnResume());
+  }
+
+  // ── Runtime Security Scans (Accessibility + Notifications) ──
+  // Runs both loophole checks sequentially on every app resume.
+  Future<void> _runSecurityScansOnResume() async {
+    if (!mounted || _isSecurityScanInFlight || _isThreatAlertOpen) {
       return;
     }
 
-    _isAccessibilityScanInFlight = true;
+    _isSecurityScanInFlight = true;
+    try {
+      // ── Loophole 4: Accessibility Service Hijack ──
+      await _scanAccessibilityOnResume();
+
+      // ── Loophole 7: Notification Snooping ──
+      if (mounted && !_isThreatAlertOpen) {
+        await _scanNotificationListenersOnResume();
+      }
+    } finally {
+      _isSecurityScanInFlight = false;
+    }
+  }
+
+  Future<void> _scanAccessibilityOnResume() async {
+    if (!mounted || _isThreatAlertOpen) return;
+
     try {
       final scanResult = await _accessibilityScanner.scanForHijack();
-      if (!mounted || !scanResult.isThreat) {
-        return;
-      }
+      if (!mounted || !scanResult.isThreat) return;
 
       final packageName = scanResult.packageName?.trim() ?? '';
       final appName =
@@ -217,7 +278,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
               : 'Unknown app';
       final installer = scanResult.installer ?? 'UNKNOWN';
 
-      // ── Log every rogue service to the SQLite Telemetry Vault ──
+      // Log every rogue service to the SQLite Telemetry Vault
       for (final rogue in scanResult.rogueServices) {
         unawaited(
           reportFraudSilently(
@@ -239,19 +300,70 @@ class _SecurityDashboardState extends State<SecurityDashboard>
         'liveHash': null,
         'expectedHash': 'UNAVAILABLE',
         'message':
-            "'$appName' was sideloaded (installer: $installer) and is using "
+            "'\$appName' was sideloaded (installer: \$installer) and is using "
             "Android accessibility access to monitor or control your screen. "
             "Disable or uninstall it immediately before using YONO.",
       });
     } catch (error) {
-      debugPrint('Accessibility resume scan failed: $error');
-    } finally {
-      _isAccessibilityScanInFlight = false;
+      debugPrint('Accessibility resume scan failed: \$error');
+    }
+  }
+
+  // ── Loophole 7: Notification Snooper Detection ──
+  Future<void> _scanNotificationListenersOnResume() async {
+    if (!mounted || _isThreatAlertOpen) return;
+
+    try {
+      final scanResult = await _notificationScanner.scanForSnoopers();
+      if (!mounted || !scanResult.isThreat) return;
+
+      final packageName = scanResult.packageName?.trim() ?? '';
+      final appName =
+          scanResult.appName?.trim().isNotEmpty == true
+              ? scanResult.appName!.trim()
+              : packageName.isNotEmpty
+              ? packageName
+              : 'Unknown app';
+      final installer = scanResult.installer ?? 'UNKNOWN';
+
+      // Log every rogue listener to telemetry
+      for (final rogue in scanResult.rogueListeners) {
+        unawaited(
+          reportFraudSilently(
+            rogue.packageName,
+            'ROGUE_NOTIFICATION_LISTENER',
+          ),
+        );
+      }
+
+      await _showThreatAlertAsync({
+        'verdict': 'ROGUE_NOTIFICATION_LISTENER',
+        'packageName': packageName,
+        'appName': appName,
+        'installer': installer,
+        'rogueCount': scanResult.rogueListeners.length,
+        'isRooted': false,
+        'trojanApp': null,
+        'liveHash': null,
+        'expectedHash': 'UNAVAILABLE',
+        'message':
+            "'\$appName' was sideloaded (installer: \$installer) and has "
+            "notification access, which means it can read your OTPs, "
+            "banking alerts, and personal messages. "
+            "Revoke its access or uninstall it immediately.",
+      });
+    } catch (error) {
+      debugPrint('Notification listener scan failed: \$error');
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // ── GATE 0: Permanent lockout if device is rooted/jailbroken ──
+    if (_isDeviceCompromised) {
+      return _buildCompromisedScreen();
+    }
+
     return Scaffold(
       backgroundColor: const Color(0xFF0B101E),
       body: Column(
@@ -272,6 +384,129 @@ class _SecurityDashboardState extends State<SecurityDashboard>
         ],
       ),
       bottomNavigationBar: _bottomNav(),
+    );
+  }
+
+  // ── Permanent Black Screen — Root/Jailbreak Detected ──
+  Widget _buildCompromisedScreen() {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Pulsing red shield icon
+                Container(
+                  width: 120,
+                  height: 120,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFFCC0000).withOpacity(0.15),
+                    border: Border.all(
+                      color: const Color(0xFFCC0000).withOpacity(0.5),
+                      width: 3,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFFCC0000).withOpacity(0.3),
+                        blurRadius: 40,
+                        spreadRadius: 10,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.phonelink_lock_rounded,
+                    color: Color(0xFFFF4D4D),
+                    size: 60,
+                  ),
+                ),
+                const SizedBox(height: 32),
+
+                // Title
+                Text(
+                  '🚨 KAVACH',
+                  style: GoogleFonts.orbitron(
+                    color: const Color(0xFFFF4D4D),
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 4,
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Subtitle badge
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    color: const Color(0xFFCC0000).withOpacity(0.2),
+                    border: Border.all(
+                      color: const Color(0xFFCC0000).withOpacity(0.4),
+                    ),
+                  ),
+                  child: Text(
+                    'DEVICE INTEGRITY COMPROMISED',
+                    style: GoogleFonts.orbitron(
+                      color: const Color(0xFFFF4D4D),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+
+                // Message
+                Text(
+                  'Root / Jailbreak detected.\n\n'
+                  'Banking operations are SUSPENDED.\n\n'
+                  'This device\'s operating system has been modified, '
+                  'allowing malicious actors to bypass OS-level security '
+                  'controls, intercept banking transactions, and '
+                  'capture credentials.\n\n'
+                  'Please restore this device to factory settings '
+                  'before using YONO.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.7),
+                    fontSize: 14,
+                    height: 1.6,
+                  ),
+                ),
+                const SizedBox(height: 32),
+
+                // Technical detail
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.white.withOpacity(0.05),
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.1),
+                    ),
+                  ),
+                  child: Text(
+                    _compromiseReason,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.4),
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

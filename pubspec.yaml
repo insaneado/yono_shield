@@ -31,6 +31,9 @@ dependencies:
   # Anti-Tapjacking — FLAG_SECURE blocks overlays, screenshots, screen recording
   flutter_windowmanager: ^0.2.0
 
+  # Root/Jailbreak Detection — Loophole 8 device integrity check
+  flutter_jailbreak_detection: ^1.10.0
+
   # Default Flutter icons
   cupertino_icons: ^1.0.8
 

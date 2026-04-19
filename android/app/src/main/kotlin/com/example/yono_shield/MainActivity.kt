@@ -26,6 +26,7 @@ class MainActivity : FlutterActivity() {
         private const val METHOD_CHANNEL = "com.yonoshield.security/bridge"
         private const val EVENT_CHANNEL = "com.yonoshield.security/sms_stream"
         private const val ACCESSIBILITY_CHANNEL = "kavach.security/accessibility"
+        private const val NOTIFICATION_CHANNEL = "kavach.security/notifications"
         private const val SMS_PERMISSION_REQUEST = 2001
         private const val OVERLAY_PERMISSION_REQUEST = 2002
 
@@ -347,6 +348,27 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // ── Notification Snooper Detection Channel ──
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NOTIFICATION_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "checkRogueNotificationListeners" -> {
+                        try {
+                            result.success(checkRogueNotificationListeners())
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Notification listener scan failed", e)
+                            result.error(
+                                "NOTIFICATION_SCAN_ERROR",
+                                "Notification listener scan failed: ${e.message}",
+                                null
+                            )
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
@@ -478,6 +500,106 @@ class MainActivity : FlutterActivity() {
         return mapOf(
             "isThreat" to false,
             "rogueServices" to emptyList<Map<String, Any?>>(),
+            "packageName" to null,
+            "appName" to null
+        )
+    }
+
+    /**
+     * Detect sideloaded apps that have been granted notification listener access.
+     * Uses the same Installer Verification logic as the accessibility scanner.
+     *
+     * Reads `enabled_notification_listeners` from Settings.Secure, parses the
+     * component names to extract package names, then checks each one's installer.
+     * Sideloaded apps (null / unknown installer) are flagged as threats.
+     *
+     * Gracefully handles null or empty settings strings.
+     */
+    private fun checkRogueNotificationListeners(): Map<String, Any?> {
+        val enabledListenersRaw: String? = try {
+            Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read enabled_notification_listeners", e)
+            null
+        }
+
+        if (enabledListenersRaw.isNullOrBlank()) {
+            Log.d(TAG, "No notification listeners enabled")
+            return mapOf(
+                "isThreat" to false,
+                "rogueListeners" to emptyList<Map<String, Any?>>(),
+                "packageName" to null,
+                "appName" to null
+            )
+        }
+
+        // The string is a colon-delimited list of ComponentName flattened strings:
+        // e.g. "com.example.app/.MyService:com.other.app/.Listener"
+        val componentNames = enabledListenersRaw.split(":")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        // Extract unique package names (before the "/")
+        val activePackages = componentNames
+            .mapNotNull { cn ->
+                val slashIndex = cn.indexOf("/")
+                if (slashIndex > 0) cn.substring(0, slashIndex) else cn.split("/").firstOrNull()
+            }
+            .distinct()
+
+        Log.d(TAG, "Notification listener scan: ${activePackages.size} active package(s)")
+
+        val rogueListeners = mutableListOf<Map<String, Any?>>()
+
+        for (pkgName in activePackages) {
+            // Skip our own package
+            if (pkgName == packageName) continue
+
+            val installer = getInstallerForPackage(pkgName)
+            val isTrusted = installer != null && TRUSTED_INSTALLERS.contains(installer)
+
+            if (isTrusted) {
+                Log.d(TAG, "Notification listener SAFE (store-installed): $pkgName [installer=$installer]")
+                continue
+            }
+
+            // Sideloaded app with active notification listener → THREAT
+            val appName = try {
+                val appInfo = packageManager.getApplicationInfo(pkgName, 0)
+                packageManager.getApplicationLabel(appInfo).toString().ifBlank { pkgName }
+            } catch (_: Exception) {
+                pkgName
+            }
+
+            Log.w(
+                TAG,
+                "ROGUE NOTIFICATION LISTENER (sideloaded): $pkgName " +
+                    "[installer=${installer ?: "null"}]"
+            )
+
+            rogueListeners.add(
+                mapOf(
+                    "packageName" to pkgName,
+                    "appName" to appName,
+                    "installer" to (installer ?: "UNKNOWN")
+                )
+            )
+        }
+
+        if (rogueListeners.isNotEmpty()) {
+            val primary = rogueListeners.first()
+            return mapOf(
+                "isThreat" to true,
+                "packageName" to primary["packageName"],
+                "appName" to primary["appName"],
+                "installer" to primary["installer"],
+                "rogueListeners" to rogueListeners
+            )
+        }
+
+        return mapOf(
+            "isThreat" to false,
+            "rogueListeners" to emptyList<Map<String, Any?>>(),
             "packageName" to null,
             "appName" to null
         )
