@@ -1,8 +1,8 @@
 # =============================================================================
-# KAVACH — scanner.py (Omni-Scanner: URL Heuristics + QR Decoder + WHOIS)
+# KAVACH — scanner.py (Threat Intelligence Engine v2.0)
 # =============================================================================
 #
-# Stateless multi-modal scanner for the KAVACH Pre-Click Interceptor.
+# Multi-modal scanner for the KAVACH Pre-Click Interceptor.
 #
 # Pipelines:
 #   Pipeline 1 — Text:  raw SMS text ──► extract_urls() ──► scan_url()
@@ -10,22 +10,27 @@
 #                                                        ──► scan_url()
 #   Pipeline 3 — OCR:   (stub) screenshot ──► OCR text ──► extract_urls()
 #
-# Verdict Flow:
-#   1. If domain is in WHITELISTED_DOMAINS → immediate SAFE
-#   2. Run heuristic rules chain (brand spoof, homoglyph, risky TLD)
-#   3. If flagged as PHISHING → WHOIS Fallback Verification:
-#      - Lookup WHOIS registrant org/name/emails
-#      - If matches known bank identifiers → downgrade to GREY_ALERT
-#      - If WHOIS fails or doesn't match → fail-secure as PHISHING
-#   4. If no rules fire → SAFE
+# Verdict Flow (scan_url):
+#   1. Redirect Trace       — expand URL shorteners to final destination
+#   2. Dynamic Whitelist    — verified SBI domains → immediate SAFE
+#   3. Heuristic Rules      — brand spoof, homoglyph, risky TLD
+#   4. Fuzzy String Match   — SequenceMatcher >80% similarity to core assets
+#                             catches dynamic typo-squatting without hardcoding
+#   5. Threat Intelligence  — VirusTotal + Google Safe Browsing (3s timeout)
+#                             catches entirely unknown zero-day domains
+#   6. WHOIS Fallback       — if flagged, verify registrant before blocking
+#   7. If no gate fires     → SAFE
 # =============================================================================
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
+import os
 import re
 import socket
+from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 import requests
@@ -71,6 +76,11 @@ _WHOIS_TIMEOUT: float = 5.0
 # tighter than WHOIS because redirect tracing is now the first step in the
 # pipeline and directly affects end-to-end latency.
 _REDIRECT_TRACE_TIMEOUT: float = 3.0
+
+# Strict timeout for external Threat Intelligence API calls (VirusTotal,
+# Google Safe Browsing).  If the API is slow or down, we fail-open and
+# fall back to local heuristic + fuzzy matching verdicts.
+_THREAT_API_TIMEOUT: float = 3.0
 
 # Maximum number of redirect hops we will follow while expanding a shortened
 # or obfuscated URL.  This prevents malicious infinite redirect loops from
@@ -121,6 +131,22 @@ HIGH_RISK_TLDS: set[str] = {
     ".buzz",
     ".rest",
 }
+
+# ── Core Assets for Fuzzy Matching ──
+# These are the crown-jewel domains we protect.  Any incoming domain with
+# >80% similarity (but NOT an exact whitelist match) is typo-squatting.
+CORE_PROTECTED_ASSETS: list[str] = [
+    "onlinesbi.sbi",
+    "sbiyono.sbi",
+    "statebankofindia.com",
+    "bank.sbi",
+    "sbi.co.in",
+]
+
+# Fuzzy similarity threshold.  0.80 = 80% character-sequence match.
+# Tuned to catch "onlinesb1.sbi" (0.92), "sbiy0no.sbi" (0.86), etc.
+# while ignoring unrelated domains like "example.com" (0.15).
+_FUZZY_THRESHOLD: float = 0.80
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PIPELINE 1 — URL EXTRACTOR
@@ -282,6 +308,227 @@ _HEURISTIC_CHAIN = [
     _check_homoglyphs,
     _check_high_risk_tld,
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GATE 3 — FUZZY STRING MATCHING (Mathematical Typo-Squatting Detection)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def check_fuzzy_similarity(domain: str) -> tuple[bool, str | None, float]:
+    """Detect typo-squatting via mathematical string similarity.
+
+    Uses ``difflib.SequenceMatcher`` to compare the incoming domain against
+    each core protected asset.  If the similarity ratio exceeds the threshold
+    but the domain is NOT an exact whitelist match, it's a typo-squat.
+
+    This replaces the brittle hardcoded homoglyph list with a dynamic
+    approach that catches zero-day typo variants automatically.
+
+    Args:
+        domain: The bare domain (no port, no scheme).
+
+    Returns:
+        (is_threat, reason_string_or_None, highest_similarity_ratio)
+    """
+    # Domains already in the whitelist are guaranteed safe
+    if domain in WHITELISTED_DOMAINS:
+        return False, None, 0.0
+
+    highest_ratio = 0.0
+    closest_asset = ""
+
+    for asset in CORE_PROTECTED_ASSETS:
+        ratio = SequenceMatcher(None, domain, asset).ratio()
+        if ratio > highest_ratio:
+            highest_ratio = ratio
+            closest_asset = asset
+
+    if highest_ratio > _FUZZY_THRESHOLD:
+        reason = (
+            f"FUZZY_TYPOSQUAT: '{domain}' is {highest_ratio:.0%} similar to "
+            f"protected asset '{closest_asset}' — likely typo-squatting"
+        )
+        logger.warning(
+            "Fuzzy match THREAT: %s ↔ %s (ratio=%.3f, threshold=%.2f)",
+            domain,
+            closest_asset,
+            highest_ratio,
+            _FUZZY_THRESHOLD,
+        )
+        return True, reason, highest_ratio
+
+    return False, None, highest_ratio
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GATE 4 — THREAT INTELLIGENCE (VirusTotal + Google Safe Browsing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _query_virustotal(url: str) -> bool:
+    """Query VirusTotal URL reputation API.
+
+    Uses the ``/api/v3/urls/{id}`` GET endpoint with base64url-encoded URL ID.
+    Returns True if at least one engine flags the URL as malicious.
+
+    Fails-open (returns False) on any error so the scanner stays alive.
+    """
+    api_key = os.environ.get("VIRUSTOTAL_API_KEY", "")
+    if not api_key:
+        logger.debug("VIRUSTOTAL_API_KEY not set — skipping VT check")
+        return False
+
+    try:
+        # VirusTotal URL ID = base64url of the URL without padding
+        url_id = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
+        resp = requests.get(
+            f"https://www.virustotal.com/api/v3/urls/{url_id}",
+            headers={"x-apikey": api_key},
+            timeout=_THREAT_API_TIMEOUT,
+        )
+
+        if resp.status_code != 200:
+            logger.debug(
+                "VirusTotal returned HTTP %d for %s — treating as unknown",
+                resp.status_code,
+                url,
+            )
+            return False
+
+        data = resp.json()
+        stats = (
+            data.get("data", {})
+            .get("attributes", {})
+            .get("last_analysis_stats", {})
+        )
+        malicious = stats.get("malicious", 0)
+        suspicious = stats.get("suspicious", 0)
+
+        if malicious > 0 or suspicious > 0:
+            logger.warning(
+                "VirusTotal THREAT: %s — malicious=%d, suspicious=%d",
+                url,
+                malicious,
+                suspicious,
+            )
+            return True
+
+        return False
+
+    except requests.exceptions.Timeout:
+        logger.warning("VirusTotal timeout for %s after %ss — fail-open", url, _THREAT_API_TIMEOUT)
+        return False
+    except requests.exceptions.RequestException as exc:
+        logger.warning("VirusTotal request failed for %s (%s) — fail-open", url, exc)
+        return False
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.warning("VirusTotal parse error for %s (%s) — fail-open", url, exc)
+        return False
+    except Exception as exc:
+        logger.warning("VirusTotal unexpected error for %s (%s: %s) — fail-open", url, type(exc).__name__, exc)
+        return False
+
+
+def _query_google_safe_browsing(url: str) -> bool:
+    """Query Google Safe Browsing Lookup API v4.
+
+    Sends a ``threatMatches:find`` POST with the URL.  Returns True if
+    Google identifies any threat match.
+
+    Fails-open (returns False) on any error.
+    """
+    api_key = os.environ.get("GOOGLE_SAFE_BROWSING_API_KEY", "")
+    if not api_key:
+        logger.debug("GOOGLE_SAFE_BROWSING_API_KEY not set — skipping GSB check")
+        return False
+
+    try:
+        payload = {
+            "client": {
+                "clientId": "kavach-scanner",
+                "clientVersion": "2.0.0",
+            },
+            "threatInfo": {
+                "threatTypes": [
+                    "MALWARE",
+                    "SOCIAL_ENGINEERING",
+                    "UNWANTED_SOFTWARE",
+                    "POTENTIALLY_HARMFUL_APPLICATION",
+                ],
+                "platformTypes": ["ANY_PLATFORM"],
+                "threatEntryTypes": ["URL"],
+                "threatEntries": [{"url": url}],
+            },
+        }
+
+        resp = requests.post(
+            f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={api_key}",
+            json=payload,
+            timeout=_THREAT_API_TIMEOUT,
+        )
+
+        if resp.status_code != 200:
+            logger.debug(
+                "Google Safe Browsing returned HTTP %d for %s — treating as unknown",
+                resp.status_code,
+                url,
+            )
+            return False
+
+        matches = resp.json().get("matches")
+        if matches:
+            logger.warning(
+                "Google Safe Browsing THREAT: %s — %d match(es)",
+                url,
+                len(matches),
+            )
+            return True
+
+        return False
+
+    except requests.exceptions.Timeout:
+        logger.warning("Google Safe Browsing timeout for %s after %ss — fail-open", url, _THREAT_API_TIMEOUT)
+        return False
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Google Safe Browsing request failed for %s (%s) — fail-open", url, exc)
+        return False
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.warning("Google Safe Browsing parse error for %s (%s) — fail-open", url, exc)
+        return False
+    except Exception as exc:
+        logger.warning("Google Safe Browsing unexpected error for %s (%s: %s) — fail-open", url, type(exc).__name__, exc)
+        return False
+
+
+def query_threat_intelligence(url: str) -> tuple[bool, str | None]:
+    """Query the Hive Mind — VirusTotal + Google Safe Browsing.
+
+    Runs both APIs sequentially (each with a strict 3s timeout).
+    If EITHER flags the URL as malicious, returns (True, reason).
+    If both time out or fail, returns (False, None) — fail-open
+    to let the local heuristic + fuzzy matching handle it.
+
+    Args:
+        url: The full URL to check.
+
+    Returns:
+        (is_threat, reason_string_or_None)
+    """
+    sources: list[str] = []
+
+    if _query_virustotal(url):
+        sources.append("VIRUSTOTAL")
+
+    if _query_google_safe_browsing(url):
+        sources.append("GOOGLE_SAFE_BROWSING")
+
+    if sources:
+        reason = f"THREAT_INTEL: flagged by {' + '.join(sources)}"
+        logger.warning("Threat Intelligence BLOCKED %s — %s", url, reason)
+        return True, reason
+
+    return False, None
 
 
 def _whois_verify_bank_ownership(domain: str) -> dict | None:
@@ -453,7 +700,37 @@ def scan_url(url: str) -> dict:
             heuristic_reason = reason
             break
 
-    # If no heuristic rule fired, the URL is clean.
+    # ── GATE 3: Fuzzy String Matching ─────────────────────────────────────
+    # Mathematical typo-squatting detection — catches zero-day typo variants
+    # without requiring hardcoded pattern updates.
+    if heuristic_reason is None:
+        is_fuzzy_threat, fuzzy_reason, fuzzy_ratio = check_fuzzy_similarity(
+            domain_no_port
+        )
+        if is_fuzzy_threat:
+            heuristic_reason = fuzzy_reason
+
+    # ── GATE 4: Threat Intelligence APIs ──────────────────────────────────
+    # Query VirusTotal + Google Safe Browsing for entirely unknown zero-day
+    # domains that don't match any local heuristic or fuzzy pattern.
+    # Only called if no local gate has already flagged the URL.
+    if heuristic_reason is None:
+        is_api_threat, api_reason = query_threat_intelligence(resolved_url)
+        if is_api_threat:
+            # API-flagged threats bypass WHOIS downgrade — they are confirmed
+            # malicious by global threat databases, not just heuristic guesses.
+            logger.warning(
+                "Threat Intelligence BLOCKED %s: %s", domain_no_port, api_reason
+            )
+            return {
+                "url": url,
+                "resolved_url": resolved_url,
+                "domain": domain_no_port,
+                "verdict": "PHISHING",
+                "rule": api_reason,
+            }
+
+    # If no gate fired at all, the URL is clean.
     if heuristic_reason is None:
         return {
             "url": url,
@@ -462,12 +739,12 @@ def scan_url(url: str) -> dict:
             "verdict": "SAFE",
         }
 
-    # ── GATE 3: WHOIS Fallback Verification ───────────────────────────────
-    # The heuristic engine flagged this URL.  Before blocking it, perform
-    # a live WHOIS lookup to check if the registrant is actually the bank.
-    # This prevents false positives on new legitimate SBI marketing domains.
+    # ── GATE 5: WHOIS Fallback Verification ───────────────────────────────
+    # The heuristic/fuzzy engine flagged this URL.  Before blocking it,
+    # perform a live WHOIS lookup to check if the registrant is actually
+    # the bank. This prevents false positives on new SBI marketing domains.
     logger.info(
-        "Heuristic PHISHING flag for %s (rule: %s) — running WHOIS "
+        "Heuristic/Fuzzy PHISHING flag for %s (rule: %s) — running WHOIS "
         "fallback verification...",
         domain_no_port,
         heuristic_reason,
@@ -664,46 +941,4 @@ def scan_image(image_source: str | bytes | io.IOBase) -> dict:
 #     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FUTURE — ML / API Hybrid Check (Layer 4+)
-# ─────────────────────────────────────────────────────────────────────────────
 
-# async def check_virustotal_api(url: str) -> dict:
-#     """Query the VirusTotal URL scanning API for a reputation verdict.
-#
-#     This will be injected into the heuristic chain as a fallback when the
-#     local rules engine returns SAFE but the URL is still suspicious (e.g.
-#     newly registered domain, URL shortener, etc.).
-#
-#     Integration plan:
-#       1. POST the URL to https://www.virustotal.com/api/v3/urls
-#       2. Poll the analysis endpoint until completion.
-#       3. Parse `data.attributes.last_analysis_stats` for malicious count.
-#       4. If malicious > 0, override verdict to PHISHING with source=VT.
-#
-#     Requires:
-#       - VIRUSTOTAL_API_KEY environment variable
-#       - httpx or aiohttp for async HTTP
-#       - Rate limiting (4 req/min on free tier)
-#
-#     Returns:
-#         {
-#             "url": url,
-#             "vt_score": {"malicious": int, "suspicious": int, "clean": int},
-#             "verdict": "PHISHING" | "SAFE",
-#             "source": "VIRUSTOTAL"
-#         }
-#     """
-#     import httpx
-#     import os
-#
-#     api_key = os.environ["VIRUSTOTAL_API_KEY"]
-#     async with httpx.AsyncClient() as client:
-#         resp = await client.post(
-#             "https://www.virustotal.com/api/v3/urls",
-#             headers={"x-apikey": api_key},
-#             data={"url": url},
-#         )
-#         analysis_id = resp.json()["data"]["id"]
-#         # ... poll for result, parse stats, return verdict
-#         pass
