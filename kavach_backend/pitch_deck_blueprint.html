@@ -120,9 +120,9 @@ Pipeline 4 — OCR:       (Reserved) Screenshot → Tesseract OCR → URL Extrac
 </tr>
 <tr>
   <td>Gate 4</td>
-  <td><strong>Fuzzy Typo-Squatting</strong></td>
-  <td>SequenceMatcher computes <strong>character-sequence similarity</strong> against Core Protected Assets. Domains exceeding <strong>80% similarity</strong> but NOT whitelisted are flagged as zero-day typo-squats. Dynamic — catches novel variants without pattern updates.</td>
-  <td>FUZZY_TYPOSQUAT or continue</td>
+  <td><strong>ML Typo-Squatting Engine</strong></td>
+  <td><strong>Character-Level TF-IDF Vectorizer</strong> (scikit-learn) computes <strong>n-gram cosine similarity</strong> (bigram through 4-gram, <code>char_wb</code> analyzer) against Core Protected Assets. Domains exceeding <strong>85% cosine similarity</strong> are flagged as <code>TYPOSQUAT_DETECTED</code>. Catches visual/phonetic typo variants (<code>sttebank</code> ↔ <code>statebank</code>) mathematically — no brittle edit-distance or pattern lists required. A <strong>Siamese 1D-CNN</strong> (PyTorch) architecture is staged for production training.</td>
+  <td>TYPOSQUAT_DETECTED or continue</td>
 </tr>
 <tr>
   <td>Gate 5</td>
@@ -132,7 +132,7 @@ Pipeline 4 — OCR:       (Reserved) Screenshot → Tesseract OCR → URL Extrac
 </tr>
 </table>
 
-<p><strong>Post-Gate Logic:</strong> No gate fires → <code>SAFE</code>. Gate 3/4 fires → WHOIS Fallback (§5.3 Grey Alert). Gate 5 fires → <code>PHISHING</code> (globally confirmed).</p>
+<p><strong>Post-Gate Logic:</strong> No gate fires → <code>SAFE</code>. Any gate fires → <code>BLOCKED</code>. <strong>Strictly binary verdicts — no Grey Alert, no WHOIS downgrade.</strong></p>
 </div>
 
 <!-- ═══════════════════════════ PAGE BREAK ═══════════════════════════ -->
