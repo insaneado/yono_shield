@@ -9,7 +9,11 @@
 #     │
 #     ├─ gather_evidence()            → WHOIS + DNS resolution
 #     ├─ report_to_google_safe_browsing()  → Google Safe Browsing API
-#     └─ dispatch_abuse_email()       → SMTP abuse report to registrar
+#     └─ dispatch_soc_ticket()         → Internal SOC analyst queue
+#
+# NOTE: Per Red Team audit, this module NO LONGER sends emails to external
+# registrars or abuse contacts.  All threat intelligence is routed to an
+# internal SOC analyst mailbox for human-in-the-loop review.
 #
 # This module is designed to run as a FastAPI BackgroundTask so the
 # user-facing webhook replies are never blocked by slow WHOIS lookups
@@ -66,8 +70,14 @@ _API_TIMEOUT: float = 10.0
 # SMTP connection timeout (seconds)
 _SMTP_TIMEOUT: float = 15.0
 
-# SOC identity for abuse emails
+# SOC identity for threat tickets
 _SOC_ORG = "KAVACH Zero-Trust Security Operations Center"
+
+# Internal SOC analyst queue — all threat data is routed here for
+# human review.  No emails are sent to external registrars or ICANN.
+SOC_INTERNAL_EMAIL = os.getenv(
+    "SOC_INTERNAL_EMAIL", "soc-alerts@sbi-kavach-internal.com"
+)
 _SOC_DIVISION = "SBI YONO Shield — Fraud Intelligence Unit"
 
 
@@ -391,12 +401,13 @@ def _build_abuse_email_body(evidence: dict, url: str) -> str:
     return body
 
 
-def dispatch_abuse_email(evidence: dict, url: str) -> dict:
-    """Send a professional abuse report email to the domain's registrar.
+def dispatch_soc_ticket(evidence: dict, url: str) -> dict:
+    """Format threat intelligence into an internal SOC Ticket and email it
+    to the designated internal SOC analyst queue.
 
-    Constructs a MIME multipart email with the SOC report and sends it
-    via SMTP (TLS).  If SMTP credentials are not configured, the email
-    content is logged to console instead.
+    Per Red Team audit: this function NO LONGER sends emails to external
+    registrars or abuse contacts.  All threat data is queued for human
+    SOC Analyst review at ``SOC_INTERNAL_EMAIL``.
 
     Args:
         evidence: The dict returned by ``gather_evidence()``.
@@ -404,81 +415,70 @@ def dispatch_abuse_email(evidence: dict, url: str) -> dict:
 
     Returns:
         A dict with:
-          - dispatched:    bool — whether the email was actually sent
-          - recipients:    list of email addresses targeted
+          - dispatched:    bool — whether the ticket was actually sent
+          - recipients:    list of email addresses targeted (internal only)
           - error:         error message (if any)
     """
     result: dict = {
         "dispatched": False,
-        "recipients": [],
+        "recipients": [SOC_INTERNAL_EMAIL],
         "error": None,
     }
 
-    # Determine recipients — prefer abuse emails from WHOIS
-    recipients = list(evidence.get("abuse_emails", []))
-    if not recipients:
-        # Fallback: use the registrar's likely abuse@ address
-        registrar = evidence.get("registrar", "")
-        if registrar:
-            # Best-effort: many registrars use abuse@registrar-domain.com
-            logger.warning(
-                "No abuse emails from WHOIS for %s — email will be logged "
-                "only (no recipient available).",
-                evidence.get("domain"),
-            )
-        result["error"] = "No abuse contact emails found in WHOIS data"
-
-    result["recipients"] = recipients
-
-    # Build the email
+    # Build the SOC ticket email
     domain = evidence.get("domain", "UNKNOWN")
     body = _build_abuse_email_body(evidence, url)
 
+    # Prepend internal SOC routing header to the body
+    soc_header = (
+        "[INTERNAL SOC TICKET — DO NOT FORWARD EXTERNALLY]\n"
+        "Threat data queued for Human SOC Analyst review.\n"
+        f"Internal Recipient: {SOC_INTERNAL_EMAIL}\n"
+        "Action Required: Review evidence and determine if external \n"
+        "takedown submission to registrar is warranted.\n"
+        "\n" + "=" * 72 + "\n\n"
+    )
+    body = soc_header + body
+
     sender = SMTP_EMAIL or "kavach-soc@example.com"
     subject = (
-        f"[URGENT] Phishing Abuse Report — Domain: {domain} — "
-        f"Immediate Suspension Requested"
+        f"[SOC TICKET] Phishing Threat Intelligence — Domain: {domain} — "
+        f"Review Required"
     )
 
     msg = MIMEMultipart("alternative")
     msg["From"] = f"{_SOC_ORG} <{sender}>"
+    msg["To"] = SOC_INTERNAL_EMAIL
     msg["Subject"] = subject
     msg["X-Priority"] = "1"  # Highest priority
-    msg["X-KAVACH-Report"] = "automated-takedown"
+    msg["X-KAVACH-Report"] = "soc-ticket-internal"
 
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     # ── Guard: SMTP credentials required for actual dispatch ──
     if not SMTP_EMAIL or not SMTP_PASSWORD:
         logger.warning(
-            "SMTP_EMAIL or SMTP_PASSWORD not set — abuse email logged "
+            "SMTP_EMAIL or SMTP_PASSWORD not set — SOC ticket logged "
             "to console only. Configure .env for live dispatch."
         )
-        # Log the full email to console for demo / audit trail
-        _log_email_to_console(subject, recipients, body)
+        # Log the full ticket to console for demo / audit trail
+        _log_email_to_console(subject, [SOC_INTERNAL_EMAIL], body)
         return result
 
-    if not recipients:
-        # Log the email even though we have no recipients
-        _log_email_to_console(subject, recipients, body)
-        return result
-
-    msg["To"] = ", ".join(recipients)
-
-    # ── Send via SMTP TLS ──
+    # ── Send via SMTP TLS to internal SOC queue ──
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=_SMTP_TIMEOUT) as srv:
             srv.ehlo()
             srv.starttls()
             srv.ehlo()
             srv.login(SMTP_EMAIL, SMTP_PASSWORD)
-            srv.sendmail(sender, recipients, msg.as_string())
+            srv.sendmail(sender, [SOC_INTERNAL_EMAIL], msg.as_string())
 
         result["dispatched"] = True
         logger.info(
-            "✅ Abuse email dispatched for %s → %s",
+            "Threat data queued for Human SOC Analyst review: %s -> %s",
             domain,
-            recipients,
+            SOC_INTERNAL_EMAIL,
         )
 
     except smtplib.SMTPAuthenticationError:
@@ -491,7 +491,7 @@ def dispatch_abuse_email(evidence: dict, url: str) -> dict:
 
     except smtplib.SMTPException as exc:
         result["error"] = f"SMTP error: {type(exc).__name__}: {exc}"
-        logger.error("SMTP error dispatching abuse email: %s", exc)
+        logger.error("SMTP error dispatching SOC ticket: %s", exc)
 
     except socket.timeout:
         result["error"] = "SMTP connection timed out"
@@ -539,7 +539,11 @@ async def execute_takedown_protocol(url: str) -> dict:
       1. Extract domain from URL
       2. ``gather_evidence()``            — DNS + WHOIS intelligence
       3. ``report_to_google_safe_browsing()`` — Google ecosystem report
-      4. ``dispatch_abuse_email()``       — Registrar abuse notification
+      4. ``dispatch_soc_ticket()``         — Internal SOC analyst queue
+
+    NOTE: Per Red Team audit, threat data is routed to an internal SOC
+    analyst for human-in-the-loop review.  No emails are sent to external
+    registrars or ICANN abuse contacts.
 
     Args:
         url: The full phishing URL to take down.
@@ -553,7 +557,7 @@ async def execute_takedown_protocol(url: str) -> dict:
         "started_at": datetime.now(timezone.utc).isoformat(),
         "evidence": None,
         "safe_browsing": None,
-        "abuse_email": None,
+        "soc_ticket": None,
         "completed_at": None,
         "status": "IN_PROGRESS",
     }
@@ -610,26 +614,26 @@ async def execute_takedown_protocol(url: str) -> dict:
         report["safe_browsing"] = {"error": f"{type(exc).__name__}: {exc}"}
         logger.error("Phase 2 failed for %s: %s", url, exc)
 
-    # ── Phase 3: Dispatch abuse email ──
+    # ── Phase 3: Dispatch internal SOC ticket ──
     try:
-        logger.info("📧 Phase 3/3 — Dispatching abuse email...")
-        evidence_for_email = report.get("evidence", {})
-        if isinstance(evidence_for_email, dict) and "error" not in evidence_for_email:
-            email_result = dispatch_abuse_email(evidence_for_email, url)
+        logger.info("📧 Phase 3/3 — Queuing threat data for SOC Analyst review...")
+        evidence_for_ticket = report.get("evidence", {})
+        if isinstance(evidence_for_ticket, dict) and "error" not in evidence_for_ticket:
+            ticket_result = dispatch_soc_ticket(evidence_for_ticket, url)
         else:
             # If evidence gathering failed, build minimal evidence
-            email_result = dispatch_abuse_email(
+            ticket_result = dispatch_soc_ticket(
                 {"domain": domain, "ip_address": "UNRESOLVABLE", "abuse_emails": []},
                 url,
             )
-        report["abuse_email"] = email_result
+        report["soc_ticket"] = ticket_result
         logger.info(
-            "   ✅ Abuse email: dispatched=%s, recipients=%s",
-            email_result["dispatched"],
-            email_result["recipients"],
+            "   Threat data queued for Human SOC Analyst review: dispatched=%s, recipient=%s",
+            ticket_result["dispatched"],
+            SOC_INTERNAL_EMAIL,
         )
     except Exception as exc:
-        report["abuse_email"] = {"error": f"{type(exc).__name__}: {exc}"}
+        report["soc_ticket"] = {"error": f"{type(exc).__name__}: {exc}"}
         logger.error("Phase 3 failed for %s: %s", url, exc)
 
     # ── Finalize ──
@@ -645,7 +649,7 @@ async def execute_takedown_protocol(url: str) -> dict:
         f"|  IP         : {report.get('evidence', {}).get('ip_address', '?'):<46}|\n"
         f"|  Registrar  : {report.get('evidence', {}).get('registrar', '?'):<46}|\n"
         f"|  SB Submit  : {str(report.get('safe_browsing', {}).get('submitted', '?')):<46}|\n"
-        f"|  Email Sent : {str(report.get('abuse_email', {}).get('dispatched', '?')):<46}|\n"
+        f"|  SOC Ticket : {str(report.get('soc_ticket', {}).get('dispatched', '?')):<46}|\n"
         "+============================================================+"
     )
 

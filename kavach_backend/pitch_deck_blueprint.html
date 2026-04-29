@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAVACH Zero-Trust Ecosystem — Pitch Deck Blueprint</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Orbitron:wght@700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 20mm 18mm 20mm 18mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', sans-serif; color: #e0e0e0; background: #0B101E; line-height: 1.7; font-size: 11px; }
+
+  .cover { display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100vh; text-align: center; background: linear-gradient(135deg, #0B101E 0%, #111827 50%, #0B101E 100%); page-break-after: always; position: relative; overflow: hidden; }
+  .cover::before { content: ''; position: absolute; width: 500px; height: 500px; border-radius: 50%; background: radial-gradient(circle, rgba(0,255,163,0.08) 0%, transparent 70%); top: 50%; left: 50%; transform: translate(-50%, -50%); }
+  .cover-badge { display: inline-block; padding: 6px 20px; border: 1px solid rgba(0,255,163,0.3); border-radius: 6px; color: #00FFA3; font-family: 'Orbitron', sans-serif; font-size: 10px; letter-spacing: 3px; margin-bottom: 24px; background: rgba(0,255,163,0.05); }
+  .cover h1 { font-family: 'Orbitron', sans-serif; font-size: 42px; font-weight: 900; letter-spacing: 6px; background: linear-gradient(90deg, #00FFA3, #00D4FF); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 12px; position: relative; }
+  .cover h2 { font-size: 16px; color: rgba(255,255,255,0.5); font-weight: 500; letter-spacing: 1px; margin-bottom: 40px; }
+  .cover-line { width: 80px; height: 2px; background: linear-gradient(90deg, #00FFA3, #00D4FF); margin: 0 auto 30px; border-radius: 2px; }
+  .cover-meta { color: rgba(255,255,255,0.35); font-size: 10px; letter-spacing: 1px; }
+
+  .page { page-break-before: always; padding-top: 10px; }
+  .page:first-of-type { page-break-before: avoid; }
+
+  h2 { font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 800; letter-spacing: 3px; color: #00FFA3; margin: 28px 0 16px; padding-bottom: 8px; border-bottom: 1px solid rgba(0,255,163,0.15); }
+  h3 { font-size: 14px; font-weight: 700; color: #00D4FF; margin: 20px 0 10px; letter-spacing: 0.5px; }
+  h4 { font-size: 12px; font-weight: 700; color: #FF9F1C; margin: 14px 0 6px; }
+
+  p { margin-bottom: 10px; color: rgba(255,255,255,0.75); }
+  strong { color: #fff; }
+
+  .value-prop { background: linear-gradient(135deg, rgba(0,255,163,0.08), rgba(0,212,255,0.05)); border: 1px solid rgba(0,255,163,0.2); border-radius: 12px; padding: 20px 24px; margin: 16px 0; font-size: 12px; line-height: 1.8; color: rgba(255,255,255,0.85); font-weight: 500; }
+
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 16px; font-size: 10.5px; }
+  th { background: rgba(0,255,163,0.1); color: #00FFA3; font-weight: 700; text-align: left; padding: 8px 10px; border: 1px solid rgba(255,255,255,0.08); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+  td { padding: 8px 10px; border: 1px solid rgba(255,255,255,0.06); color: rgba(255,255,255,0.7); vertical-align: top; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+  td:first-child { color: #00D4FF; font-weight: 600; white-space: nowrap; }
+
+  .arch-box { background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 16px; margin: 12px 0; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.6); white-space: pre; line-height: 1.6; overflow-x: auto; }
+
+  .info-card { background: rgba(0,212,255,0.05); border: 1px solid rgba(0,212,255,0.15); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
+  .info-card p { margin: 0; color: rgba(255,255,255,0.7); }
+
+  .alert-card { background: rgba(255,77,77,0.06); border: 1px solid rgba(255,77,77,0.15); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
+
+  .phase-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 14px 18px; margin: 8px 0; }
+  .phase-card h4 { margin-top: 0; }
+
+  ul, ol { margin: 8px 0 12px 20px; color: rgba(255,255,255,0.7); }
+  li { margin-bottom: 4px; }
+  li strong { color: #00D4FF; }
+
+  .section-num { color: #00FFA3; font-family: 'Orbitron', sans-serif; font-weight: 800; margin-right: 6px; }
+
+  .footer-quote { margin-top: 30px; padding: 20px 24px; background: linear-gradient(135deg, rgba(0,255,163,0.06), rgba(0,212,255,0.04)); border: 1px solid rgba(0,255,163,0.12); border-radius: 12px; font-style: italic; color: rgba(255,255,255,0.7); font-size: 11.5px; line-height: 1.8; text-align: center; }
+
+  @media print {
+    body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════ COVER PAGE ═══════════════════════════ -->
+<div class="cover">
+  <div class="cover-badge">CONFIDENTIAL — HACKATHON SUBMISSION</div>
+  <h1>KAVACH</h1>
+  <h2>Zero-Trust Banking Security Ecosystem</h2>
+  <div class="cover-line"></div>
+  <p style="color:rgba(255,255,255,0.5); font-size:12px; max-width:500px; line-height:1.8;">
+    Pitch Deck Blueprint<br>
+    Architecture &bull; Threat Intelligence &bull; Security Flows
+  </p>
+  <div style="margin-top:60px;" class="cover-meta">
+    SBI YONO Shield &bull; Tier-1 Fintech Hackathon &bull; 2026
+  </div>
+</div>
+
+<!-- ═══════════════════════════ SECTION 1 ═══════════════════════════ -->
+<div class="page">
+<h2><span class="section-num">01</span> THE CORE VALUE PROPOSITION</h2>
+
+<div class="value-prop">
+KAVACH is a Zero-Trust, multi-layered banking security ecosystem that intercepts phishing attacks <em>before</em> the customer clicks — across SMS, WhatsApp, QR codes, and sideloaded APKs — while simultaneously verifying the cryptographic integrity of every installed application and the device OS itself, delivering enterprise-grade fraud prevention to the most vulnerable, low-literacy rural banking populations through audio-visual threat education and fully offline-resilient telemetry.
+</div>
+
+<!-- ═══════════════════════════ SECTION 2 ═══════════════════════════ -->
+<h2><span class="section-num">02</span> THE THREAT BRAIN — CLOUD BACKEND ENGINE</h2>
+
+<p>The KAVACH cloud backend is a production-grade <strong>FastAPI microservice</strong> (codename: <strong>Omni-Scanner v2.0</strong>) that operates as the centralized intelligence hub. It processes threats across <strong>three parallel pipelines</strong> and responds in real-time to both WhatsApp Cloud API webhooks and direct Flutter client requests.</p>
+
+<h3>2.1 Multi-Pipeline Architecture</h3>
+<div class="arch-box">Pipeline 1 — TEXT:      Raw SMS/WhatsApp text → URL Extraction → 5-Gate Scan Pipeline
+Pipeline 2 — IMAGE:     WhatsApp image → QR Decode (pyzbar) → URL Extraction → 5-Gate Scan
+Pipeline 3 — DOCUMENT:  WhatsApp document → APK/DEX Extension + MIME Check → Sideload Block
+Pipeline 4 — OCR:       (Reserved) Screenshot → Tesseract OCR → URL Extraction → 5-Gate Scan</div>
+
+<h3>2.2 The 5-Gate URL Scan Pipeline</h3>
+<p>Every URL — whether from SMS text, QR code, or direct scan API — passes through a <strong>sequential, fail-secure, 5-gate security pipeline</strong>:</p>
+
+<table>
+<tr><th>Gate</th><th>Name</th><th>Mechanism</th><th>Outcome</th></tr>
+<tr>
+  <td>Gate 1</td>
+  <td><strong>Redirect Trace</strong></td>
+  <td>Expands URL shorteners (bit.ly, tinyurl, t.co) by following HTTP redirects to the final destination. HEAD-first with streamed GET fallback. <strong>3-second timeout</strong>, <strong>5-hop maximum</strong> to prevent infinite redirect loops.</td>
+  <td>Resolved URL forwarded</td>
+</tr>
+<tr>
+  <td>Gate 2</td>
+  <td><strong>Dynamic Whitelist</strong></td>
+  <td>Checks resolved domain against curated set of <strong>pre-verified official SBI domains</strong> (core portals + verified marketing domains). Whitelisted domains bypass all heuristic overhead — <strong>zero latency for legitimate traffic</strong>.</td>
+  <td>SAFE (immediate) or continue</td>
+</tr>
+<tr>
+  <td>Gate 3</td>
+  <td><strong>Heuristic Rules Engine</strong></td>
+  <td><strong>(a)</strong> Brand Spoofing — flags domains containing "sbi", "yono", "statebank" that aren't whitelisted. <strong>(b)</strong> Homoglyph Detection — character-substitution patterns (o→0, i→1, e→3). <strong>(c)</strong> High-Risk TLD — disposable phishing TLDs (.xyz, .top, .tk, .ml, .click).</td>
+  <td>Heuristic reason or continue</td>
+</tr>
+<tr>
+  <td>Gate 4</td>
+  <td><strong>Fuzzy Typo-Squatting</strong></td>
+  <td>SequenceMatcher computes <strong>character-sequence similarity</strong> against Core Protected Assets. Domains exceeding <strong>80% similarity</strong> but NOT whitelisted are flagged as zero-day typo-squats. Dynamic — catches novel variants without pattern updates.</td>
+  <td>FUZZY_TYPOSQUAT or continue</td>
+</tr>
+<tr>
+  <td>Gate 5</td>
+  <td><strong>Threat Intelligence APIs</strong></td>
+  <td>Queries <strong>VirusTotal</strong> (v3) and <strong>Google Safe Browsing</strong> (v4) with strict <strong>3-second timeouts</strong>. Catches entirely unknown zero-day domains. API-flagged threats <strong>bypass WHOIS downgrade</strong>.</td>
+  <td>THREAT_INTEL block or continue</td>
+</tr>
+</table>
+
+<p><strong>Post-Gate Logic:</strong> No gate fires → <code>SAFE</code>. Gate 3/4 fires → WHOIS Fallback (§5.3 Grey Alert). Gate 5 fires → <code>PHISHING</code> (globally confirmed).</p>
+</div>
+
+<!-- ═══════════════════════════ PAGE BREAK ═══════════════════════════ -->
+<div class="page">
+<h3>2.3 The "Document Drop" Defense Mechanism</h3>
+
+<p>Intercepts <strong>APK sideloading via WhatsApp document attachments</strong> — fraudsters send malicious Android packages disguised as "banking updates."</p>
+
+<ol>
+  <li>When the Meta webhook receives a <strong>document-type message</strong>, the engine extracts <code>filename</code> and <code>mime_type</code>.</li>
+  <li><strong>Dual-check matrix</strong>: Extension matching (<code>.apk</code>, <code>.xapk</code>, <code>.jar</code>, <code>.dex</code>) AND MIME type matching (<code>application/vnd.android.package-archive</code>, etc.).</li>
+  <li>If <strong>either check</strong> triggers → <strong>immediate block</strong> + WhatsApp auto-reply warning the user.</li>
+  <li><strong>Background telemetry task</strong> logs the sideload attempt (sender, filename, timestamp) to the SIEM data lake.</li>
+</ol>
+
+<h3>2.4 The Automated OSINT Takedown Pipeline</h3>
+<p>When a URL is confirmed <code>PHISHING</code>, KAVACH initiates an <strong>automated takedown protocol</strong> as a FastAPI BackgroundTask — the user-facing reply is never delayed.</p>
+
+<table>
+<tr><th>Phase</th><th>Operation</th><th>Details</th></tr>
+<tr>
+  <td>Phase 1</td>
+  <td><strong>OSINT Evidence Gathering</strong></td>
+  <td>DNS A-record resolution (5s timeout) + live WHOIS lookup → registrar, abuse emails, registrant identity, nameservers, registration/expiration dates. Compiled into structured evidence package.</td>
+</tr>
+<tr>
+  <td>Phase 2</td>
+  <td><strong>Google Safe Browsing Report</strong></td>
+  <td>Submits phishing URL to Google Safe Browsing v4 (<code>threatMatches:find</code>). Contributes detection to the global Safe Browsing ecosystem across Chrome, Android, and all consumers.</td>
+</tr>
+<tr>
+  <td>Phase 3</td>
+  <td><strong>Registrar Abuse Email</strong></td>
+  <td>ICANN RAA §3.18-compliant abuse report via SMTP/TLS to WHOIS abuse contacts. Follows CERT-In / APWG / FIRST SOC conventions. Includes technical evidence, requested actions, and IT Act 2000 legal notice.</td>
+</tr>
+</table>
+
+<div class="info-card">
+  <p>Each phase is independently fault-tolerant — a failure in one phase never prevents execution of subsequent phases. The pipeline produces a consolidated audit report with timestamps, evidence, and dispatch status.</p>
+</div>
+
+<!-- ═══════════════════════════ SECTION 3 ═══════════════════════════ -->
+<h2><span class="section-num">03</span> THE ACTIVE SENTINEL — ANDROID / FLUTTER ENGINE</h2>
+
+<p>The on-device security enforcement layer, implemented as a <strong>hybrid Flutter + Kotlin Native architecture</strong> connected via three dedicated <code>MethodChannel</code> bridges.</p>
+
+<h3>3.1 Installer Verification — Accessibility & Notification Snooping Defense</h3>
+
+<p><strong>The Problem:</strong> Accessibility Services can <strong>read every pixel</strong>, <strong>press buttons autonomously</strong>, and <strong>intercept OTPs</strong>. Notification Listeners can harvest <strong>every banking notification and OTP</strong>. These are the highest-risk attack vectors.</p>
+
+<p><strong>KAVACH's Approach:</strong> Rather than blocking ALL accessibility services, KAVACH uses <strong>origin-based trust verification</strong>:</p>
+
+<ol>
+  <li><strong>Enumerate</strong> all active Accessibility Services via <code>AccessibilityManager</code> and Notification Listeners via <code>Settings.Secure</code>.</li>
+  <li>For each active service, invoke <strong><code>getInstallerForPackage()</code></strong> — queries PackageManager for the install source (API 30+: <code>InstallSourceInfo</code>; legacy: <code>getInstallerPackageName</code>).</li>
+  <li>Compare against <strong>Trusted Installer whitelist</strong>: Google Play Store, Huawei AppGallery, Samsung Galaxy Store, Xiaomi GetApps, OPPO/OnePlus/realme Store.</li>
+  <li><strong>Store-installed</strong> → Allowed (TalkBack, password managers, legitimate tools pass).</li>
+  <li><strong>Sideloaded (NULL/unknown installer)</strong> → Full-screen Red Alert + TTS warning + one-tap Uninstall + Telemetry report.</li>
+  <li>Both scans run <strong>on every app lifecycle resume</strong> — instant detection upon return.</li>
+</ol>
+</div>
+
+<!-- ═══════════════════════════ PAGE BREAK ═══════════════════════════ -->
+<div class="page">
+<h3>3.2 Cryptographic Certificate Hashing — Fake App Detection</h3>
+
+<p>The <strong>Cryptographic Gatekeeper</strong> is a 4-gate security pipeline executed via native Kotlin <code>SecurityManager</code>:</p>
+
+<table>
+<tr><th>Gate</th><th>Check</th><th>Implementation</th></tr>
+<tr>
+  <td>Gate 1</td>
+  <td><strong>Root / Jailbreak</strong></td>
+  <td>Multi-vector root detection (see §3.4)</td>
+</tr>
+<tr>
+  <td>Gate 2</td>
+  <td><strong>Trojan Overlay Scan</strong></td>
+  <td>Enumerates all packages with <code>GET_PERMISSIONS + GET_SERVICES</code>. Flags non-system apps with <code>SYSTEM_ALERT_WINDOW + RECEIVE_SMS</code> combo OR <code>BIND_ACCESSIBILITY_SERVICE</code> — exact permission signatures of known banking trojans.</td>
+</tr>
+<tr>
+  <td>Gate 3</td>
+  <td><strong>Certificate Extraction</strong></td>
+  <td>Extracts signing certificate via PackageManager (API 28+: <code>GET_SIGNING_CERTIFICATES</code>; legacy: <code>GET_SIGNATURES</code>). Raw bytes → <code>SHA-256</code> via <code>MessageDigest</code> → colon-separated hex fingerprint.</td>
+</tr>
+<tr>
+  <td>Gate 4</td>
+  <td><strong>Hash Comparison</strong></td>
+  <td>Live SHA-256 compared (case-insensitive) against known-good official hash. Mismatch = different private key = <strong>brand impersonation / re-packaging proof</strong>.</td>
+</tr>
+</table>
+
+<p><strong>Verdicts:</strong> <code>SAFE</code> · <code>ROOTED_DEVICE</code> · <code>TROJAN_DETECTED_{AppName}</code> · <code>INVALID_SIGNATURE</code> · <code>APP_NOT_FOUND</code></p>
+
+<h3>3.3 FLAG_SECURE — Tapjacking & Screen Recording Defense</h3>
+
+<p>At application launch, KAVACH sets the <strong><code>FLAG_SECURE</code></strong> flag on the Android window — a kernel-level instruction that:</p>
+
+<ul>
+  <li><strong>Blocks ALL <code>SYSTEM_ALERT_WINDOW</code> overlays</strong> — neutralizes invisible tapjacking attacks</li>
+  <li><strong>Prevents ALL screen recording</strong> — no third-party app can capture the screen</li>
+  <li><strong>Blocks screenshots</strong> — sensitive data cannot be captured via screenshot API</li>
+  <li><strong>Disables screen mirroring/casting</strong> — prevents external display credential harvesting</li>
+</ul>
+
+<div class="info-card"><p>This is a <strong>zero-overhead, kernel-enforced defense</strong> operating at the Android compositor level. It cannot be bypassed by any user-space application.</p></div>
+
+<h3>3.4 Root / Jailbreak Detection — Device Integrity</h3>
+
+<table>
+<tr><th>Layer</th><th>Check</th><th>Indicators</th></tr>
+<tr><td rowspan="3">Kotlin Native</td><td>Build Signature Analysis</td><td><code>Build.TAGS</code> inspection for <code>test-keys</code> (custom ROM fingerprint)</td></tr>
+<tr><td>su Binary Filesystem Scan</td><td>14 known paths including <code>/system/bin/.ext/.su</code>, vendor-specific</td></tr>
+<tr><td>Root Package Audit</td><td>10 known packages: Magisk, SuperSU, Xposed, KingRoot, Cydia Substrate, RootCloak</td></tr>
+<tr><td rowspan="3">Flutter Layer</td><td>Jailbreak Detection</td><td>su binary presence, RW /system partition</td></tr>
+<tr><td>Developer Mode</td><td>USB debugging status — external control vector</td></tr>
+<tr><td>Fail-Safe</td><td>Any exception → <strong>assumes compromised</strong> and locks down</td></tr>
+</table>
+
+<p><strong>Enforcement:</strong> Checked at launch AND every lifecycle resume. If compromised → <strong>permanent black lockout screen</strong> — all banking operations suspended until factory reset.</p>
+</div>
+
+<!-- ═══════════════════════════ PAGE BREAK ═══════════════════════════ -->
+<div class="page">
+<h2><span class="section-num">04</span> THE VAULT — OFFLINE RESILIENCE</h2>
+
+<h3>SQLite "Store and Forward" Telemetry Architecture</h3>
+
+<p>KAVACH operates where connectivity is unreliable — rural India, patchy coverage, Airplane mode. The <strong>Telemetry Vault</strong> ensures <strong>zero threat intelligence is ever lost</strong>.</p>
+
+<div class="arch-box">Threat Detected → reportFraudSilently()
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│  TelemetryDatabase (SQLite)              │
+│  Table: threat_queue                     │
+│  Columns: id, package_name, threat_type, │
+│           timestamp, status              │
+│  Status: 'pending' → 'synced'            │
+└──────────────────────────────────────────┘
+       │
+       ▼
+  SyncManager (Connectivity-Aware)
+       │
+  ┌────┴──────────────────┐
+  │ Network Available?    │
+  │  YES → POST each     │
+  │   pending record to   │
+  │   /api/telemetry      │
+  │   Mark as 'synced'    │
+  │  NO  → Stay queued,  │
+  │   wait for signal     │
+  └───────────────────────┘</div>
+
+<p><strong>Key Design Decisions:</strong></p>
+<ol>
+  <li><strong>Write-First, Sync-Later:</strong> Every threat persisted to SQLite before any network call. UI thread never blocked.</li>
+  <li><strong>Connectivity-Aware Sync:</strong> Subscribes to Android's <code>ConnectivityResult</code> stream. On any connectivity transition → auto-triggers batch sync.</li>
+  <li><strong>Idempotent Record-Level Sync:</strong> Each record synced individually with 5-second timeout. Failed records remain <code>pending</code> for next attempt.</li>
+  <li><strong>Backend Ingestion:</strong> <code>/api/telemetry</code> endpoint receives records, logs to SIEM, and auto-queues takedown for <code>PHISHING</code> telemetry.</li>
+</ol>
+
+<!-- ═══════════════════════════ SECTION 5 ═══════════════════════════ -->
+<h2><span class="section-num">05</span> CUSTOMER-CENTRIC UX FEATURES</h2>
+
+<h3>5.1 Text-to-Speech (TTS) Audio Accessibility</h3>
+
+<p>Designed for India's <strong>450+ million rural banking users</strong> with limited literacy.</p>
+
+<ul>
+  <li><strong>Engine:</strong> <code>flutter_tts</code> — <code>en-IN</code>, speech rate <strong>0.45x</strong> (deliberately slow), max volume</li>
+  <li><strong>Auto-Speak:</strong> TTS begins automatically 600ms after any Red Alert opens — zero interaction required</li>
+  <li><strong>Contextual Scripts:</strong> Each verdict has a custom, conversational TTS message (e.g., <em>"Warning. [App] is trying to read your screen to steal your OTP..."</em>)</li>
+  <li><strong>Massive Audio Button:</strong> Full-width pulsing "PLAY AUDIO WARNING" with 48px speaker icon — impossible to miss</li>
+  <li><strong>Universal Iconography:</strong> Large shield/lock/thief icons replace text-heavy warnings</li>
+</ul>
+
+<h3>5.2 Tinder-Style "Scam Simulator" — Gamified Education</h3>
+
+<ul>
+  <li><strong>Swipe Left</strong> = "SCAM" 🚫 &nbsp;&nbsp; <strong>Swipe Right</strong> = "SAFE" ✅ &nbsp; (plus massive button alternatives)</li>
+  <li><strong>Scenario Cards:</strong> WhatsApp lottery scam, official Play Store app, tampered QR code, fake OTP call</li>
+  <li><strong>Audio Feedback:</strong> TTS speaks explanation after each swipe — reinforces correct behavior, teaches risks</li>
+  <li><strong>Shield Score:</strong> Animated tracker ("2/4") with final TTS score announcement</li>
+  <li><strong>Auto-Reset:</strong> Unlimited re-play for reinforced learning</li>
+</ul>
+
+<h3>5.3 The "Grey Alert" Protocol — False-Positive Prevention</h3>
+
+<p><strong>Problem:</strong> Banks launch new promotional domains that trigger Brand Spoofing heuristics → false positives erode trust.</p>
+
+<ol>
+  <li>When heuristic/fuzzy engine flags a domain, a <strong>live WHOIS Fallback Verification</strong> runs.</li>
+  <li>Registrant fields compared against known bank identifiers ("state bank of india", "sbi", "sbicaps", etc.).</li>
+  <li><strong>Match found</strong> → Verdict downgraded to <code>GREY_ALERT</code>: <em>"⚠️ This is a new, unverified SBI promotional link. We recommend claiming offers inside your YONO app."</em></li>
+  <li><strong>No match / failure</strong> → <strong>Fail-secure</strong> as <code>PHISHING</code> with full blocking.</li>
+  <li>Grey Alerts include full WHOIS evidence for transparency and audit.</li>
+</ol>
+
+<div class="footer-quote">
+KAVACH doesn't ask users to be security experts. It makes security invisible — intercepting threats before they reach the user, educating through play, and speaking warnings aloud so that everyone, from a tech-savvy professional to a first-generation smartphone user in rural India, is equally protected.
+</div>
+</div>
+
+</body>
+</html>

@@ -40,6 +40,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
+import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,6 +48,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from meta_client import (
+    META_ACCESS_TOKEN,
     META_VERIFY_TOKEN,
     download_meta_image,
     download_whatsapp_media,
@@ -71,6 +73,12 @@ logger = logging.getLogger("kavach.main")
 # Meta / WhatsApp Cloud API configuration is centralized in meta_client.py.
 # META_VERIFY_TOKEN, send_whatsapp_reply, and download_whatsapp_media are
 # imported from there. See .env for credential setup.
+
+GRAPH_API_BASE = "https://graph.facebook.com/v18.0"
+SIGNATURE_SCAN_BYTES = 2048
+SIGNATURE_SCAN_TIMEOUT = (2, 3)
+ANDROID_ZIP_MAGIC = bytes.fromhex("50 4B 03 04")
+DEX_MAGIC = bytes.fromhex("64 65 78 0A")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # APP INIT
@@ -179,6 +187,130 @@ def _log_document_threat(sender: str, detected_name: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _resolve_whatsapp_media_url(media_id: str, auth_token: str) -> str | None:
+    """Resolve a WhatsApp media ID into Meta's short-lived download URL."""
+    if not media_id or not auth_token:
+        return None
+
+    headers = {"Authorization": f"Bearer {auth_token}"}
+    try:
+        response = requests.get(
+            f"{GRAPH_API_BASE}/{media_id}",
+            headers=headers,
+            timeout=SIGNATURE_SCAN_TIMEOUT,
+        )
+        response.raise_for_status()
+        media_url = response.json().get("url")
+        if not media_url:
+            logger.warning("No media URL returned for document media_id=%s", media_id)
+            return None
+        return media_url
+    except requests.exceptions.Timeout:
+        logger.warning("Timed out resolving document media_id=%s", media_id)
+        return None
+    except requests.RequestException as exc:
+        logger.warning("Unable to resolve document media_id=%s: %s", media_id, exc)
+        return None
+
+
+def verify_file_signature(file_url: str, auth_token: str) -> dict:
+    """Inspect the first bytes of a WhatsApp file without downloading it."""
+    if not file_url or not auth_token:
+        return {
+            "verdict": "SIGNATURE_UNAVAILABLE",
+            "signature": None,
+            "hex_prefix": "",
+        }
+
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Range": f"bytes=0-{SIGNATURE_SCAN_BYTES - 1}",
+    }
+
+    try:
+        with requests.get(
+            file_url,
+            headers=headers,
+            stream=True,
+            timeout=SIGNATURE_SCAN_TIMEOUT,
+        ) as response:
+            response.raise_for_status()
+            header_bytes = b""
+            for chunk in response.iter_content(chunk_size=SIGNATURE_SCAN_BYTES):
+                if chunk:
+                    header_bytes += chunk
+                    break
+
+        header_bytes = header_bytes[:SIGNATURE_SCAN_BYTES]
+        hex_prefix = header_bytes[:16].hex(" ").upper()
+
+        if header_bytes.startswith(DEX_MAGIC):
+            return {
+                "verdict": "EXECUTABLE_SIGNATURE",
+                "signature": "DEX",
+                "hex_prefix": hex_prefix,
+            }
+
+        if header_bytes.startswith(ANDROID_ZIP_MAGIC):
+            return {
+                "verdict": "EXECUTABLE_SIGNATURE",
+                "signature": "ZIP_APK_OR_JAR",
+                "hex_prefix": hex_prefix,
+            }
+
+        return {
+            "verdict": "NO_EXECUTABLE_SIGNATURE",
+            "signature": None,
+            "hex_prefix": hex_prefix,
+        }
+    except requests.exceptions.Timeout:
+        logger.warning("Timed out during file signature scan for %s", file_url)
+    except requests.RequestException as exc:
+        logger.warning("File signature scan failed for %s: %s", file_url, exc)
+
+    return {
+        "verdict": "SIGNATURE_UNAVAILABLE",
+        "signature": None,
+        "hex_prefix": "",
+    }
+
+
+def _metadata_claims_safe_document(filename: str, mime_type: str) -> bool:
+    """Return True when WhatsApp metadata presents the file as harmless."""
+    safe_extensions = (
+        ".pdf",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".txt",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".ppt",
+        ".pptx",
+    )
+    safe_mime_prefixes = ("image/", "text/")
+    safe_mime_types = {
+        "application/pdf",
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/octet-stream",
+    }
+
+    return (
+        any(filename.endswith(ext) for ext in safe_extensions)
+        or any(mime_type.startswith(prefix) for prefix in safe_mime_prefixes)
+        or mime_type in safe_mime_types
+    )
+
+
 def process_image_message(media_id: str) -> dict:
     """Download an image from WhatsApp and scan it for malicious QR codes.
 
@@ -218,11 +350,9 @@ def process_text_message(text: str) -> tuple[str, str, list[dict]]:
     Returns:
         (status, alert_message, scanned_urls_list)
 
-    Status may be:
-      - ``"BLOCKED"``    — at least one URL is confirmed PHISHING
-      - ``"GREY_ALERT"`` — URL flagged by heuristics but WHOIS confirmed
-                           bank ownership (likely a new marketing domain)
-      - ``"SAFE"``       — no threats detected
+    Status is STRICTLY BINARY:
+      - ``"BLOCKED"``  — at least one URL is confirmed malicious
+      - ``"SAFE"``     — no threats detected
     """
     urls = extract_urls(text)
 
@@ -234,8 +364,7 @@ def process_text_message(text: str) -> tuple[str, str, list[dict]]:
         )
 
     results = [scan_url(u) for u in urls]
-    has_threat = any(r["verdict"] == "PHISHING" for r in results)
-    has_grey = any(r["verdict"] == "GREY_ALERT" for r in results)
+    has_threat = any(r["verdict"] == "BLOCKED" for r in results)
 
     if has_threat:
         return (
@@ -243,23 +372,6 @@ def process_text_message(text: str) -> tuple[str, str, list[dict]]:
             (
                 "\U0001f6a8 KAVACH ALERT: Phishing link detected. "
                 "This domain is attempting to impersonate SBI. Do not click."
-            ),
-            results,
-        )
-
-    if has_grey:
-        # Extract the custom alert from the GREY_ALERT result
-        grey_alert = next(
-            (r.get("alert", "") for r in results if r["verdict"] == "GREY_ALERT"),
-            "",
-        )
-        return (
-            "GREY_ALERT",
-            grey_alert
-            or (
-                "\u26a0\ufe0f KAVACH Notice: This is a new, unverified SBI "
-                "promotional link. We recommend claiming offers directly "
-                "inside your YONO app to stay completely safe."
             ),
             results,
         )
@@ -461,6 +573,7 @@ async def webhook_whatsapp(
                 # ── Route: DOCUMENT message → Pipeline 3 (APK sideload block) ──
                 elif msg_type == "document":
                     doc_payload = msg.get("document", {})
+                    media_id = (doc_payload.get("id") or "").strip()
                     filename = (doc_payload.get("filename") or "").strip().lower()
                     mime_type = (doc_payload.get("mime_type") or "").strip().lower()
 
@@ -474,19 +587,56 @@ async def webhook_whatsapp(
                         "application/dex",
                     }
 
+                    signature_scan = {
+                        "verdict": "SIGNATURE_UNAVAILABLE",
+                        "signature": None,
+                        "hex_prefix": "",
+                    }
+                    if media_id and META_ACCESS_TOKEN:
+                        file_url = _resolve_whatsapp_media_url(
+                            media_id,
+                            META_ACCESS_TOKEN,
+                        )
+                        if file_url:
+                            signature_scan = verify_file_signature(
+                                file_url,
+                                META_ACCESS_TOKEN,
+                            )
+                    elif media_id:
+                        logger.warning(
+                            "META_ACCESS_TOKEN not set; skipping magic-byte scan for %s",
+                            media_id,
+                        )
+
+                    is_disguised_payload = (
+                        signature_scan.get("verdict") == "EXECUTABLE_SIGNATURE"
+                        and _metadata_claims_safe_document(filename, mime_type)
+                    )
+
                     is_dangerous = (
-                        any(filename.endswith(ext) for ext in DANGEROUS_EXTENSIONS)
+                        is_disguised_payload
+                        or any(
+                            filename.endswith(ext) for ext in DANGEROUS_EXTENSIONS
+                        )
                         or mime_type in DANGEROUS_MIME_TYPES
                     )
 
                     if is_dangerous:
                         detected_name = filename or mime_type or "unknown file"
-                        alert = (
-                            "\U0001f6a8 BLOCKED: KAVACH detected a malicious "
-                            "Android installation file (.apk). Official SBI "
-                            "apps are ONLY available via the Google Play Store. "
-                            "Never download app files directly from WhatsApp."
-                        )
+                        if is_disguised_payload:
+                            alert = (
+                                "\U0001f6a8 BLOCKED: MALICIOUS_PAYLOAD_DISGUISED. "
+                                "This file claims to be a safe document, but "
+                                "KAVACH found Android executable bytes inside. "
+                                "Do not open it or install anything from it."
+                            )
+                        else:
+                            alert = (
+                                "\U0001f6a8 BLOCKED: KAVACH detected a malicious "
+                                "Android installation file (.apk). Official SBI "
+                                "apps are ONLY available via the Google Play Store. "
+                                "Never download app files directly from WhatsApp."
+                            )
                         send_whatsapp_reply(sender, alert)
 
                         # ── Telemetry: log the sideload attempt ──
@@ -498,9 +648,11 @@ async def webhook_whatsapp(
 
                         logger.warning(
                             "\U0001f6a8 DOCUMENT SIDELOAD BLOCKED: "
-                            "file=%s mime=%s from=%s",
+                            "file=%s mime=%s signature=%s hex=%s from=%s",
                             filename or "(no filename)",
                             mime_type or "(no mime)",
+                            signature_scan.get("signature") or "(none)",
+                            signature_scan.get("hex_prefix") or "(unavailable)",
                             sender,
                         )
                     else:
