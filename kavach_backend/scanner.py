@@ -14,8 +14,8 @@
 #   1. Redirect Trace       — expand URL shorteners to final destination
 #   2. Dynamic Whitelist    — verified SBI domains → immediate SAFE
 #   3. Heuristic Rules      — brand spoof, homoglyph, risky TLD
-#   4. Fuzzy String Match   — SequenceMatcher >80% similarity to core assets
-#                             catches dynamic typo-squatting without hardcoding
+#   4. ML Typo Engine       — char TF-IDF + cosine similarity to core assets
+#                             catches visual/phonetic typo-squatting
 #   5. Threat Intelligence  — VirusTotal + Google Safe Browsing (3s timeout)
 #                             catches entirely unknown zero-day domains
 #   6. If no gate fires     → SAFE
@@ -31,13 +31,14 @@ import logging
 import os
 import re
 import socket
-from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 import requests
 # NOTE: whois import removed — WHOIS fallback eliminated per Red Team audit.
 from PIL import Image
 from pyzbar import pyzbar
+
+from ml_typo_engine import TypoSimilarityEngine
 
 logger = logging.getLogger("kavach.scanner")
 
@@ -75,7 +76,7 @@ _REDIRECT_TRACE_TIMEOUT: float = 3.0
 
 # Strict timeout for external Threat Intelligence API calls (VirusTotal,
 # Google Safe Browsing).  If the API is slow or down, we fail-open and
-# fall back to local heuristic + fuzzy matching verdicts.
+# fall back to local heuristic + ML typo-similarity verdicts.
 _THREAT_API_TIMEOUT: float = 3.0
 
 # Maximum number of redirect hops we will follow while expanding a shortened
@@ -116,9 +117,9 @@ HIGH_RISK_TLDS: set[str] = {
     ".rest",
 }
 
-# ── Core Assets for Fuzzy Matching ──
+# ── Core Assets for ML Typo Similarity ──
 # These are the crown-jewel domains we protect.  Any incoming domain with
-# >80% similarity (but NOT an exact whitelist match) is typo-squatting.
+# >85% character n-gram cosine similarity is typo-squatting.
 CORE_PROTECTED_ASSETS: list[str] = [
     "onlinesbi.sbi",
     "sbiyono.sbi",
@@ -127,10 +128,13 @@ CORE_PROTECTED_ASSETS: list[str] = [
     "sbi.co.in",
 ]
 
-# Fuzzy similarity threshold.  0.80 = 80% character-sequence match.
-# Tuned to catch "onlinesb1.sbi" (0.92), "sbiy0no.sbi" (0.86), etc.
-# while ignoring unrelated domains like "example.com" (0.15).
-_FUZZY_THRESHOLD: float = 0.80
+# ML similarity threshold.  0.85 = 85% char n-gram cosine similarity.
+_TYPO_SIMILARITY_THRESHOLD: float = 0.85
+
+_TYPO_ENGINE = TypoSimilarityEngine(
+    CORE_PROTECTED_ASSETS,
+    threshold=_TYPO_SIMILARITY_THRESHOLD,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PIPELINE 1 — URL EXTRACTOR
@@ -295,54 +299,44 @@ _HEURISTIC_CHAIN = [
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GATE 3 — FUZZY STRING MATCHING (Mathematical Typo-Squatting Detection)
+# GATE 3 — ML TYPO-SQUATTING DETECTION
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def check_fuzzy_similarity(domain: str) -> tuple[bool, str | None, float]:
-    """Detect typo-squatting via mathematical string similarity.
+def check_ml_typo_similarity(domain: str) -> tuple[bool, str | None, float]:
+    """Detect typo-squatting with char TF-IDF cosine similarity.
 
-    Uses ``difflib.SequenceMatcher`` to compare the incoming domain against
-    each core protected asset.  If the similarity ratio exceeds the threshold
-    but the domain is NOT an exact whitelist match, it's a typo-squat.
-
-    This replaces the brittle hardcoded homoglyph list with a dynamic
-    approach that catches zero-day typo variants automatically.
+    The model compares character n-gram overlap against protected domains,
+    catching sub-word typo variants without brittle edit-distance rules.
 
     Args:
         domain: The bare domain (no port, no scheme).
 
     Returns:
-        (is_threat, reason_string_or_None, highest_similarity_ratio)
+        (is_threat, reason_string_or_None, highest_similarity_score)
     """
     # Domains already in the whitelist are guaranteed safe
     if domain in WHITELISTED_DOMAINS:
         return False, None, 0.0
 
-    highest_ratio = 0.0
-    closest_asset = ""
+    typo_result = _TYPO_ENGINE.score(domain)
 
-    for asset in CORE_PROTECTED_ASSETS:
-        ratio = SequenceMatcher(None, domain, asset).ratio()
-        if ratio > highest_ratio:
-            highest_ratio = ratio
-            closest_asset = asset
-
-    if highest_ratio > _FUZZY_THRESHOLD:
+    if typo_result.is_match:
+        closest_asset = typo_result.protected_domain
         reason = (
-            f"FUZZY_TYPOSQUAT: '{domain}' is {highest_ratio:.0%} similar to "
+            f"TYPOSQUAT_DETECTED: '{domain}' is {typo_result.score:.0%} similar to "
             f"protected asset '{closest_asset}' — likely typo-squatting"
         )
         logger.warning(
-            "Fuzzy match THREAT: %s ↔ %s (ratio=%.3f, threshold=%.2f)",
+            "ML typo match THREAT: %s <-> %s (score=%.3f, threshold=%.2f)",
             domain,
-            closest_asset,
-            highest_ratio,
-            _FUZZY_THRESHOLD,
+            typo_result.protected_domain,
+            typo_result.score,
+            _TYPO_SIMILARITY_THRESHOLD,
         )
-        return True, reason, highest_ratio
+        return True, reason, typo_result.score
 
-    return False, None, highest_ratio
+    return False, None, typo_result.score
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -491,7 +485,7 @@ def query_threat_intelligence(url: str) -> tuple[bool, str | None]:
     Runs both APIs sequentially (each with a strict 3s timeout).
     If EITHER flags the URL as malicious, returns (True, reason).
     If both time out or fail, returns (False, None) — fail-open
-    to let the local heuristic + fuzzy matching handle it.
+    to let the local heuristic + ML typo-similarity gate handle it.
 
     Args:
         url: The full URL to check.
@@ -532,7 +526,7 @@ def scan_url(url: str) -> dict:
          return SAFE immediately (zero heuristic overhead).
       4. **Heuristic Rules Engine** — run brand-spoofing, homoglyph, and
          risky-TLD checks.
-      5. **Fuzzy String Matching** — mathematical typo-squatting detection.
+      5. **ML Typo Similarity** — char TF-IDF typo-squatting detection.
       6. **Threat Intelligence APIs** — VirusTotal + Google Safe Browsing.
       7. If no gate fires → SAFE.  Otherwise → BLOCKED.
 
@@ -589,19 +583,19 @@ def scan_url(url: str) -> dict:
             heuristic_reason = reason
             break
 
-    # ── GATE 3: Fuzzy String Matching ─────────────────────────────────────
-    # Mathematical typo-squatting detection — catches zero-day typo variants
-    # without requiring hardcoded pattern updates.
+    # ── GATE 3: ML Typo Similarity ───────────────────────────────────────
+    # Character n-gram TF-IDF catches visual/phonetic typo variants without
+    # relying on brittle edit-distance or exact hardcoded patterns.
     if heuristic_reason is None:
-        is_fuzzy_threat, fuzzy_reason, fuzzy_ratio = check_fuzzy_similarity(
+        is_typo_threat, typo_reason, _typo_score = check_ml_typo_similarity(
             domain_no_port
         )
-        if is_fuzzy_threat:
-            heuristic_reason = fuzzy_reason
+        if is_typo_threat:
+            heuristic_reason = typo_reason
 
     # ── GATE 4: Threat Intelligence APIs ──────────────────────────────────
     # Query VirusTotal + Google Safe Browsing for entirely unknown zero-day
-    # domains that don't match any local heuristic or fuzzy pattern.
+    # domains that don't match any local heuristic or ML typo pattern.
     # Only called if no local gate has already flagged the URL.
     if heuristic_reason is None:
         is_api_threat, api_reason = query_threat_intelligence(resolved_url)
@@ -627,9 +621,9 @@ def scan_url(url: str) -> dict:
             "verdict": "SAFE",
         }
 
-    # ── BLOCKED: Heuristic/Fuzzy gate fired — binary block ─────────────
+    # ── BLOCKED: Heuristic/ML typo gate fired — binary block ──────────
     # No WHOIS downgrade.  Any URL not in the whitelist that triggers a
-    # heuristic or fuzzy rule is definitively BLOCKED.
+    # heuristic or ML typo rule is definitively BLOCKED.
     logger.warning(
         "BLOCKED %s — rule: %s (binary verdict, no WHOIS override)",
         domain_no_port,
@@ -798,6 +792,3 @@ def scan_image(image_source: str | bytes | io.IOBase) -> dict:
 #         "scanned_urls": results,
 #         "verdict": "PHISHING" if has_threat else "SAFE",
 #     }
-
-
-
