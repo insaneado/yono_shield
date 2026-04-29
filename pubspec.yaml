@@ -31,8 +31,11 @@ dependencies:
   # Anti-Tapjacking — FLAG_SECURE blocks overlays, screenshots, screen recording
   flutter_windowmanager: ^0.2.0
 
-  # Root/Jailbreak Detection — Loophole 8 device integrity check
-  flutter_jailbreak_detection: ^1.10.0
+  # Hardware Attestation — Google Play Integrity API (TEE-backed)
+  # Replaces flutter_jailbreak_detection (software root check easily bypassed by Magisk)
+  # google_api_availability: pre-flight check that Play Services is available on device
+  # The actual Play Integrity call is made via native MethodChannel → Kotlin
+  google_api_availability: ^5.0.1
 
   # Default Flutter icons
   cupertino_icons: ^1.0.8

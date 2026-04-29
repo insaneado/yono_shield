@@ -1,5 +1,5 @@
 // ============================================================================
-// YONO SHIELD — main.dart (v6 — Modular Architecture)
+// YONO SHIELD — main.dart (v7 — Hardware Attestation Architecture)
 // ============================================================================
 //
 // Entry point for the YONO Shield cybersecurity app.
@@ -17,13 +17,13 @@
 //   │       MethodChannel                                 │
 //   │              │                                      │
 //   │  Kotlin Native (MainActivity.kt)                    │
-//   │    ├─ isDeviceRooted()          → root detection    │
+//   │    ├─ requestIntegrityVerdict()  → TEE attestation   │
 //   │    ├─ scanForTrojans()          → overlay trojans   │
 //   │    ├─ getAppSignatureHash(pkg)  → SHA-256           │
 //   │    ├─ verifyAppSecurity(pkg)    → 4-gate pipeline   │
 //   │    ├─ checkRogueAccessibility   → Loophole 4        │
 //   │    ├─ checkRogueNotifListeners  → Loophole 7        │
-//   │    ├─ DeviceIntegrity           → Loophole 8        │
+//   │    ├─ HardwareAttestation (TEE) → Loophole 8        │
 //   │    └─ FLAG_SECURE               → anti-tapjacking   │
 //   └─────────────────────────────────────────────────────┘
 // ============================================================================
@@ -39,7 +39,7 @@ import 'pages/sms_interceptor_page.dart';
 import 'pages/overlay_control_page.dart';
 import 'pages/scam_game_page.dart';
 import 'services/accessibility_scanner.dart';
-import 'services/device_integrity.dart';
+import 'services/hardware_attestation.dart';
 import 'services/notification_scanner.dart';
 import 'services/sync_manager.dart' as sync_manager;
 import 'widgets/red_alert_overlay.dart';
@@ -133,7 +133,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   final AccessibilityScanner _accessibilityScanner = AccessibilityScanner();
   final NotificationScanner _notificationScanner = NotificationScanner();
-  final DeviceIntegrity _deviceIntegrity = DeviceIntegrity();
+  final HardwareAttestation _hardwareAttestation = HardwareAttestation();
 
   int _tab = 0;
   late PageController _pageCtrl;
@@ -158,10 +158,12 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       end: 1.0,
     ).animate(CurvedAnimation(parent: _shieldPulse, curve: Curves.easeInOut));
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // ── GATE 0: Device Integrity (Root/Jailbreak) ──
+      // ── GATE 0: Hardware TEE Attestation ──
       // Must run FIRST, before any other security check.
-      // If the device is compromised, show a permanent black screen
-      // and suspend ALL banking operations.
+      // Requests a cryptographic attestation token from the device's
+      // Trusted Execution Environment via Google Play Integrity API.
+      // If the device fails MEETS_DEVICE_INTEGRITY + MEETS_BASIC_INTEGRITY,
+      // show a permanent lockout screen and suspend ALL banking operations.
       unawaited(_checkDeviceIntegrity());
     });
   }
@@ -177,8 +179,8 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Re-check device integrity on every resume (user may have rooted
-      // while the app was in background).
+      // Re-attest on every resume — device may have been rooted, bootloader
+      // unlocked, or Magisk installed while the app was in background.
       unawaited(_checkDeviceIntegrity());
     }
   }
@@ -211,14 +213,15 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     }
   }
 
-  // ── GATE 0: Device Integrity Check (Root/Jailbreak) ──
-  // If the device is compromised, render a permanent black screen.
-  // This cannot be dismissed — banking is fully suspended.
+  // ── GATE 0: Hardware TEE Attestation (Play Integrity API) ──
+  // Requests a cryptographic integrity token from the device's Trusted
+  // Execution Environment.  If the device fails attestation, render a
+  // permanent lockout screen.  This cannot be dismissed.
   Future<void> _checkDeviceIntegrity() async {
     if (!mounted || _isDeviceCompromised) return;
 
     try {
-      final result = await _deviceIntegrity.verifyDeviceIntegrity();
+      final result = await _hardwareAttestation.verifyDeviceIntegrity();
       if (!mounted) return;
 
       if (!result.isIntact) {
@@ -387,7 +390,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     );
   }
 
-  // ── Permanent Black Screen — Root/Jailbreak Detected ──
+  // ── Permanent Lockout — Hardware Attestation Failed ──
   Widget _buildCompromisedScreen() {
     return Scaffold(
       backgroundColor: Colors.black,
@@ -464,13 +467,15 @@ class _SecurityDashboardState extends State<SecurityDashboard>
 
                 // Message
                 Text(
-                  'Root / Jailbreak detected.\n\n'
+                  'Hardware Attestation FAILED.\n\n'
                   'Banking operations are SUSPENDED.\n\n'
-                  'This device\'s operating system has been modified, '
+                  'This device failed Google Play Integrity verification. '
+                  'The bootloader may be unlocked, the OS may be modified, '
+                  'or root access (Magisk/SuperSU) is present — '
                   'allowing malicious actors to bypass OS-level security '
-                  'controls, intercept banking transactions, and '
-                  'capture credentials.\n\n'
-                  'Please restore this device to factory settings '
+                  'controls and intercept banking transactions.\n\n'
+                  'Please restore this device to factory settings, '
+                  're-lock the bootloader, and remove any root tools '
                   'before using YONO.',
                   textAlign: TextAlign.center,
                   style: TextStyle(

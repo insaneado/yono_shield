@@ -10,14 +10,23 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Base64
 import android.util.Log
 import android.view.accessibility.AccessibilityManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.google.android.play.core.integrity.IntegrityManagerFactory
+import com.google.android.play.core.integrity.IntegrityTokenRequest
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import org.json.JSONObject
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
 
@@ -27,6 +36,7 @@ class MainActivity : FlutterActivity() {
         private const val EVENT_CHANNEL = "com.yonoshield.security/sms_stream"
         private const val ACCESSIBILITY_CHANNEL = "kavach.security/accessibility"
         private const val NOTIFICATION_CHANNEL = "kavach.security/notifications"
+        private const val INTEGRITY_CHANNEL = "kavach.security/integrity"
         private const val SMS_PERMISSION_REQUEST = 2001
         private const val OVERLAY_PERMISSION_REQUEST = 2002
 
@@ -41,6 +51,18 @@ class MainActivity : FlutterActivity() {
             "com.oppo.market",                 // OPPO App Market
             "com.heytap.market"                // OnePlus / realme Store
         )
+
+        // ── Google Cloud Project Number ──
+        // Required by Play Integrity API to identify your app's GCP project.
+        // HOW TO GET THIS:
+        //   1. Go to https://console.cloud.google.com/
+        //   2. Enable the "Play Integrity API" for your project
+        //   3. Copy the numeric Project Number (NOT the Project ID)
+        //   4. Replace the placeholder below
+        //
+        // ⚠️ PRODUCTION: This should come from a server-side config endpoint,
+        //    NOT be hardcoded in the APK where it can be extracted.
+        private const val CLOUD_PROJECT_NUMBER: Long = 0L // TODO: Replace with your GCP project number
     }
 
     private val securityManager by lazy(LazyThreadSafetyMode.NONE) {
@@ -369,6 +391,39 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // ── Hardware Attestation Channel (Play Integrity API) ──
+        // Requests a cryptographic integrity token from the device's TEE
+        // (Trusted Execution Environment) via Google Play Services.
+        //
+        // ⚠️ PRODUCTION NOTE:
+        //   In a production deployment, the raw integrity token (JWS) should
+        //   be sent to the KAVACH Python backend for server-side decryption:
+        //     POST https://playintegrity.googleapis.com/v1/{packageName}:decodeIntegrityToken
+        //   Client-side JWT parsing (this MVP) is NOT production-safe —
+        //   an attacker with root access can intercept the MethodChannel.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, INTEGRITY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "requestIntegrityVerdict" -> {
+                        CoroutineScope(Dispatchers.Main).launch {
+                            try {
+                                val verdict = requestIntegrityVerdict()
+                                result.success(verdict)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Play Integrity attestation failed", e)
+                                result.error(
+                                    "INTEGRITY_ERROR",
+                                    "Hardware attestation failed: ${e.message}",
+                                    null
+                                )
+                            }
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
@@ -627,6 +682,158 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             Log.w(TAG, "getInstallerForPackage: $pkgName failed", e)
             null
+        }
+    }
+
+    // =========================================================================
+    // PLAY INTEGRITY API — Hardware TEE Attestation
+    // =========================================================================
+    //
+    // Requests an integrity token from Google Play Services, which leverages
+    // the device's Trusted Execution Environment (hardware security module)
+    // to produce a signed attestation that CANNOT be spoofed by software
+    // rootkits like Magisk.
+    //
+    // The token is a JWS (JSON Web Signature) with three base64url-encoded
+    // parts: header.payload.signature.  The payload contains device verdict
+    // labels that indicate the device's integrity state.
+    //
+    // Verdict Labels:
+    //   MEETS_STRONG_INTEGRITY  — Hardware-backed keystore, verified boot
+    //   MEETS_DEVICE_INTEGRITY  — Genuine Android, locked bootloader
+    //   MEETS_BASIC_INTEGRITY   — Basic checks pass (may have unlocked BL)
+    //   (empty)                 — Rooted, emulator, or custom ROM
+    //
+    // ⚠️ PRODUCTION: The raw token must be sent server-side for proper
+    //    cryptographic verification. Client-side JWT decode is MVP-only.
+    // =========================================================================
+
+    /**
+     * Generate a cryptographic nonce for the integrity request.
+     *
+     * The nonce prevents replay attacks — each attestation request must
+     * include a unique, unpredictable value. In production, this nonce
+     * should be generated server-side and validated on token verification.
+     */
+    private fun generateNonce(): String {
+        val timestamp = System.currentTimeMillis()
+        val raw = "$packageName:$timestamp:${System.nanoTime()}"
+        val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
+        return Base64.encodeToString(digest, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    /**
+     * Request an integrity verdict from the device's TEE via Play Integrity API.
+     *
+     * Flow:
+     *   1. Generate a cryptographic nonce (anti-replay)
+     *   2. Create IntegrityManager from IntegrityManagerFactory
+     *   3. Build IntegrityTokenRequest with nonce + cloud project number
+     *   4. Request token from TEE (async, awaits Google Play Services)
+     *   5. Parse the JWS payload to extract device verdict labels
+     *   6. Return a map of boolean flags for Flutter consumption
+     *
+     * @return Map with keys: meetsDeviceIntegrity, meetsBasicIntegrity,
+     *         meetsStrongIntegrity, verdictLabels, rawToken
+     */
+    private suspend fun requestIntegrityVerdict(): Map<String, Any> {
+        val nonce = generateNonce()
+        Log.d(TAG, "Play Integrity: requesting token with nonce=${nonce.take(16)}...")
+
+        // ── Create Integrity Manager ──
+        val integrityManager = IntegrityManagerFactory.create(applicationContext)
+
+        // ── Build Token Request ──
+        val requestBuilder = IntegrityTokenRequest.builder()
+            .setNonce(nonce)
+
+        // Only set cloud project number if configured (non-zero)
+        if (CLOUD_PROJECT_NUMBER != 0L) {
+            requestBuilder.setCloudProjectNumber(CLOUD_PROJECT_NUMBER)
+        }
+
+        val tokenRequest = requestBuilder.build()
+
+        // ── Request Token from TEE ──
+        // This call goes to Google Play Services, which communicates with
+        // the device's Trusted Execution Environment to produce a signed
+        // attestation token.  Requires network connectivity to Google servers.
+        val tokenResponse = integrityManager.requestIntegrityToken(tokenRequest).await()
+        val token = tokenResponse.token()
+
+        Log.d(TAG, "Play Integrity: received token (${token.length} chars)")
+
+        // ── Parse JWT Payload (MVP: Client-Side) ──
+        // The token is a JWS: base64url(header).base64url(payload).base64url(signature)
+        //
+        // ⚠️ PRODUCTION WARNING:
+        //   This client-side decode does NOT verify the signature.
+        //   In production, send `token` to your backend which calls:
+        //     POST playintegrity.googleapis.com/v1/{package}:decodeIntegrityToken
+        //   with your service account credentials.  The backend then returns
+        //   the verified verdict to the client.
+        val verdictLabels = parseVerdictLabelsFromToken(token)
+
+        val meetsBasic = verdictLabels.contains("MEETS_BASIC_INTEGRITY")
+        val meetsDevice = verdictLabels.contains("MEETS_DEVICE_INTEGRITY")
+        val meetsStrong = verdictLabels.contains("MEETS_STRONG_INTEGRITY")
+
+        Log.i(
+            TAG,
+            "Play Integrity verdict: basic=$meetsBasic, device=$meetsDevice, " +
+                "strong=$meetsStrong, labels=$verdictLabels"
+        )
+
+        return mapOf(
+            "meetsBasicIntegrity" to meetsBasic,
+            "meetsDeviceIntegrity" to meetsDevice,
+            "meetsStrongIntegrity" to meetsStrong,
+            "verdictLabels" to verdictLabels,
+            "rawToken" to token  // For server-side verification in production
+        )
+    }
+
+    /**
+     * Extract device verdict labels from the JWS token payload.
+     *
+     * The JWS payload (second dot-delimited segment) is a base64url-encoded
+     * JSON object with the structure:
+     *   {
+     *     "deviceIntegrity": {
+     *       "deviceRecognitionVerdict": ["MEETS_DEVICE_INTEGRITY", ...]
+     *     },
+     *     ...
+     *   }
+     *
+     * ⚠️ MVP ONLY — does not verify the JWS signature.
+     */
+    private fun parseVerdictLabelsFromToken(token: String): List<String> {
+        return try {
+            val parts = token.split(".")
+            if (parts.size != 3) {
+                Log.w(TAG, "Integrity token has ${parts.size} parts (expected 3)")
+                return emptyList()
+            }
+
+            val payloadBytes = Base64.decode(parts[1], Base64.URL_SAFE)
+            val payload = JSONObject(String(payloadBytes, Charsets.UTF_8))
+
+            val deviceIntegrity = payload.optJSONObject("deviceIntegrity")
+            val verdictArray = deviceIntegrity?.optJSONArray("deviceRecognitionVerdict")
+
+            if (verdictArray == null) {
+                Log.w(TAG, "No deviceRecognitionVerdict in integrity payload")
+                return emptyList()
+            }
+
+            val labels = mutableListOf<String>()
+            for (i in 0 until verdictArray.length()) {
+                labels.add(verdictArray.getString(i))
+            }
+            labels
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse integrity token payload", e)
+            emptyList()
         }
     }
 }

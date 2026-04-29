@@ -41,6 +41,11 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Google Play Integrity API — hardware TEE attestation
+    // Provides IntegrityManagerFactory for requesting cryptographic
+    // integrity tokens from the device's Trusted Execution Environment.
+    implementation("com.google.android.play:integrity:1.4.0")
 }
 
 flutter {
