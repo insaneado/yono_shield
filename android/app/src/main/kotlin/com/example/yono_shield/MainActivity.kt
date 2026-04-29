@@ -62,7 +62,7 @@ class MainActivity : FlutterActivity() {
         //
         // ⚠️ PRODUCTION: This should come from a server-side config endpoint,
         //    NOT be hardcoded in the APK where it can be extracted.
-        private const val CLOUD_PROJECT_NUMBER: Long = 0L // TODO: Replace with your GCP project number
+        private const val CLOUD_PROJECT_NUMBER: Long = 880368626361L
     }
 
     private val securityManager by lazy(LazyThreadSafetyMode.NONE) {
