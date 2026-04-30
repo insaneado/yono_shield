@@ -53,9 +53,7 @@ class OmniScannerService : NotificationListenerService() {
             "High-priority alerts when a phishing link is detected in any messaging app."
 
         // ── KAVACH backend endpoint ──
-        // 10.0.2.2 is the Android Emulator alias for the host machine's localhost.
-        // For a physical device on the same Wi-Fi, replace with the host's LAN IP.
-        private const val KAVACH_ENDPOINT = "http://10.0.2.2:8080/webhook/whatsapp"
+        private const val KAVACH_ENDPOINT = "https://filth-endurable-swear.ngrok-free.dev/webhook/whatsapp"
         private const val DEVICE_USER_ID = "device_1"
 
         // ── Simple URL detection pattern ──

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>YONO Shield — KAVACH Zero-Trust Security Platform — Technical Report</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&family=JetBrains+Mono:wght@400;500&display=swap');
+  :root { --accent: #00FFA3; --red: #FF4D4D; --blue: #00D4FF; --bg: #0B101E; --card: #111827; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  @page { size: A4; margin: 1.5cm; }
+  body { font-family:'Inter',sans-serif; background:#fff; color:#1a1a2e; line-height:1.7; font-size:11pt; }
+
+  /* COVER */
+  .cover { background: linear-gradient(135deg, #0B101E 0%, #1a1a3e 100%); color:#fff; padding:80px 60px; page-break-after:always; min-height:95vh; display:flex; flex-direction:column; justify-content:center; }
+  .cover h1 { font-size:42pt; font-weight:900; letter-spacing:4px; margin-bottom:8px; }
+  .cover h1 span { color:#00FFA3; }
+  .cover .subtitle { font-size:14pt; color:rgba(255,255,255,0.6); margin-bottom:40px; letter-spacing:2px; }
+  .cover .meta-box { background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:12px; padding:24px 28px; margin-top:20px; }
+  .cover .meta-box p { color:rgba(255,255,255,0.7); font-size:10pt; margin:4px 0; }
+  .cover .meta-box strong { color:#00FFA3; }
+  .cover .badge { display:inline-block; background:#00FFA3; color:#0B101E; padding:6px 18px; border-radius:20px; font-weight:700; font-size:9pt; letter-spacing:2px; margin-top:24px; }
+
+  /* CONTENT */
+  .content { padding: 40px 50px; }
+  h2 { font-size:18pt; font-weight:800; color:#0B101E; border-bottom:3px solid #00FFA3; padding-bottom:6px; margin:36px 0 16px; letter-spacing:1px; }
+  h3 { font-size:13pt; font-weight:700; color:#1a1a3e; margin:20px 0 8px; }
+  p, li { font-size:10.5pt; color:#333; }
+  ul { padding-left:20px; margin:8px 0; }
+  li { margin:4px 0; }
+
+  .arch-box { background:#f0f7ff; border-left:4px solid #00D4FF; padding:16px 20px; border-radius:0 8px 8px 0; margin:16px 0; font-family:'JetBrains Mono',monospace; font-size:9pt; line-height:1.8; white-space:pre; overflow-x:auto; }
+
+  table { width:100%; border-collapse:collapse; margin:12px 0 20px; font-size:10pt; }
+  th { background:#0B101E; color:#00FFA3; padding:8px 12px; text-align:left; font-weight:700; letter-spacing:1px; font-size:8pt; }
+  td { padding:8px 12px; border-bottom:1px solid #e0e0e0; }
+  tr:nth-child(even) td { background:#f8f9fa; }
+
+  .pillar { background:#f8f9fc; border:1px solid #e2e8f0; border-radius:12px; padding:20px 24px; margin:16px 0; page-break-inside:avoid; }
+  .pillar-header { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+  .pillar-num { background:#0B101E; color:#00FFA3; width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:12pt; }
+  .pillar-title { font-weight:800; font-size:13pt; color:#0B101E; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:8pt; font-weight:700; letter-spacing:0.5px; margin:0 2px; }
+  .tag-green { background:#d4edda; color:#155724; }
+  .tag-red { background:#f8d7da; color:#721c24; }
+  .tag-blue { background:#d1ecf1; color:#0c5460; }
+
+  .flow-step { display:flex; align-items:flex-start; gap:12px; margin:8px 0; }
+  .flow-num { background:#00FFA3; color:#0B101E; min-width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:9pt; }
+
+  .page-break { page-break-before: always; }
+  .footer { text-align:center; color:#999; font-size:8pt; margin-top:40px; padding-top:12px; border-top:1px solid #eee; }
+</style>
+</head>
+<body>
+
+<!-- ====== COVER PAGE ====== -->
+<div class="cover">
+  <h1>YONO <span>SHIELD</span></h1>
+  <div class="subtitle">KAVACH ZERO-TRUST SECURITY PLATFORM</div>
+  <p style="color:rgba(255,255,255,0.5); font-size:11pt; max-width:600px; line-height:1.8;">
+    A real-time, multi-layered mobile security ecosystem that protects banking customers
+    from brand impersonation, phishing, trojan overlays, and device compromise —
+    across SMS, WhatsApp, Telegram, and every messaging channel.
+  </p>
+  <div class="meta-box">
+    <p><strong>Platform:</strong> Flutter (Dart) + Native Android (Kotlin) + Python Backend (FastAPI)</p>
+    <p><strong>Architecture:</strong> Zero-Trust — every layer independently verifies before granting access</p>
+    <p><strong>Target Users:</strong> Rural banking customers, including low-literacy users (TTS audio alerts)</p>
+    <p><strong>Threat Model:</strong> SBI YONO brand impersonation, sideloaded clones, OTP theft, QR tampering</p>
+  </div>
+  <div class="badge">TECHNICAL ARCHITECTURE REPORT</div>
+</div>
+
+<!-- ====== PAGE 2: WHAT THE APP DOES ====== -->
+<div class="content">
+<h2>1. WHAT YONO SHIELD ACTUALLY DOES</h2>
+<p>YONO Shield is a <strong>real-time security guardian</strong> that runs on the user's Android phone. The moment the app launches, it performs a chain of automated security checks. If any check fails, the user is blocked from proceeding — protecting them from fraud they may not even be aware of.</p>
+
+<h3>The Security Boot Sequence (runs every time the app opens or resumes):</h3>
+<div class="flow-step"><div class="flow-num">1</div><div><strong>Hardware Attestation (TEE)</strong> — Asks the phone's secure hardware chip: "Is this device genuine and unmodified?" Uses Google Play Integrity API. If the bootloader is unlocked or the OS is rooted → <strong>permanent lockout screen</strong>.</div></div>
+<div class="flow-step"><div class="flow-num">2</div><div><strong>Accessibility Hijack Scan</strong> — Checks if any sideloaded app has Android Accessibility permissions (can read your screen, tap buttons, steal OTPs). If found → <strong>Red Alert with TTS audio warning</strong>.</div></div>
+<div class="flow-step"><div class="flow-num">3</div><div><strong>Notification Snooper Scan</strong> — Checks if any sideloaded app has Notification Listener access (can read your OTPs, banking alerts). If found → <strong>Red Alert with TTS audio warning</strong>.</div></div>
+<div class="flow-step"><div class="flow-num">4</div><div><strong>Omni-Channel Shield (background)</strong> — Continuously monitors ALL incoming notifications (SMS, WhatsApp, Telegram, Signal, etc.), extracts URLs, and scans them against the KAVACH backend in real-time.</div></div>
+
+<h2>2. THE FOUR PILLARS</h2>
+<p>The app has four main tabs, each addressing a different attack vector:</p>
+
+<div class="pillar">
+  <div class="pillar-header"><div class="pillar-num">1</div><div class="pillar-title">CRYPTOGRAPHIC GATEKEEPER (Radar Tab)</div></div>
+  <p><strong>Attack it stops:</strong> Fake banking apps (brand impersonation clones)</p>
+  <p><strong>How it works:</strong> The user taps "SCAN NOW". The app runs a 4-gate pipeline on the device:</p>
+  <ul>
+    <li><strong>Gate 1 — Root Detection:</strong> Scans for 8 known su binary paths, 5 root management packages, and test-keys in the Android build fingerprint.</li>
+    <li><strong>Gate 2 — Trojan Scan:</strong> Iterates every installed app. Any sideloaded app with Accessibility or Overlay permissions is flagged as a trojan.</li>
+    <li><strong>Gate 3 — Certificate Extraction:</strong> Uses Android PackageManager to extract the SHA-256 fingerprint of the target app's signing certificate.</li>
+    <li><strong>Gate 4 — Hash Comparison:</strong> Compares the live hash against a database of known-good official hashes. Mismatch = brand impersonation.</li>
+  </ul>
+  <p><strong>Result:</strong> Green "VERIFIED" card if safe. Full-screen Red Alert with TTS audio if any gate fails.</p>
+</div>
+
+<div class="pillar">
+  <div class="pillar-header"><div class="pillar-num">2</div><div class="pillar-title">OMNI-CHANNEL SHIELD (Shield Tab)</div></div>
+  <p><strong>Attack it stops:</strong> Phishing links sent via any messaging app</p>
+  <p><strong>How it works:</strong> Uses Android's <code>NotificationListenerService</code> to intercept notification text from <em>every</em> messaging app on the phone. Extracts URLs using regex, then POSTs each URL to the KAVACH Python backend for analysis.</p>
+  <p>The backend runs an <strong>8-rule heuristic chain</strong>:</p>
+  <ul>
+    <li>Suspicious TLD detection (.top, .xyz, .buzz, .tk)</li>
+    <li>Banking keyword + non-banking domain combination</li>
+    <li>Unicode homoglyph detection (е vs e, о vs o)</li>
+    <li>IP-based URL detection (http://192.168.x.x/login)</li>
+    <li>Shortened URL flagging (bit.ly, tinyurl)</li>
+    <li>Excessive subdomain chains (sbi.login.verify.evil.com)</li>
+    <li>Brand name in subdomain but wrong root domain</li>
+    <li><strong>ML typosquatting detection</strong> — character-level TF-IDF cosine similarity against official SBI domains</li>
+  </ul>
+  <p>Plus external threat intelligence: <strong>Google Safe Browsing API</strong> + <strong>VirusTotal</strong> (70+ AV engines).</p>
+</div>
+
+<div class="pillar">
+  <div class="pillar-header"><div class="pillar-num">3</div><div class="pillar-title">THREAT SHIELD (Overlay Tab)</div></div>
+  <p><strong>Attack it stops:</strong> User accidentally opening a malicious app</p>
+  <p><strong>How it works:</strong> A native Android foreground service draws a full-screen <code>TYPE_APPLICATION_OVERLAY</code> window on top of malicious apps, physically blocking all user interaction until the threat is dismissed. Uses <code>SYSTEM_ALERT_WINDOW</code> permission.</p>
+</div>
+
+<div class="pillar">
+  <div class="pillar-header"><div class="pillar-num">4</div><div class="pillar-title">SCAM SIMULATOR (Learn Tab)</div></div>
+  <p><strong>Purpose:</strong> Gamified security education for rural, low-literacy users</p>
+  <p><strong>How it works:</strong> A Tinder-style card swipe game presents 4 real-world scam scenarios (WhatsApp lottery, fake QR codes, OTP phone calls, fake Play Store apps). User swipes left for SCAM, right for SAFE. Text-to-Speech reads explanations aloud. Tracks a "Shield Score".</p>
+</div>
+
+<div class="page-break"></div>
+<h2>3. SYSTEM ARCHITECTURE</h2>
+
+<div class="arch-box">┌─────────────────────────────────────────────────────────────┐
+│  FLUTTER UI (Dart)                                          │
+│    ├─ SecurityDashboard → 4-tab PageView                    │
+│    ├─ RedAlertOverlay   → Full-screen TTS warning           │
+│    ├─ SyncManager       → SQLite store-and-forward          │
+│    └─ HardwareAttestation → Play Services pre-flight        │
+│              │                                              │
+│       MethodChannel("com.yonoshield.security/bridge")       │
+│              │                                              │
+│  KOTLIN NATIVE (Android)                                    │
+│    ├─ SecurityManager       → Root + Signature + Trojan     │
+│    ├─ PackageScannerService → Installed app audit            │
+│    ├─ OmniScannerService    → NotificationListener → URLs   │
+│    ├─ SmsReceiver           → SMS BroadcastReceiver         │
+│    ├─ OverlayService        → Full-screen blocking overlay  │
+│    └─ AppInstallReceiver    → New install monitor           │
+│              │                                              │
+│       HTTPS (Ngrok / Cloud)                                 │
+│              │                                              │
+│  KAVACH PYTHON BACKEND (FastAPI)                            │
+│    ├─ /webhook          → WhatsApp message handler          │
+│    ├─ /v1/scan/text     → URL phishing analysis             │
+│    ├─ /v1/scan/apk      → APK signature verification       │
+│    ├─ /api/telemetry    → Threat telemetry ingestion        │
+│    ├─ scanner.py        → 8-rule heuristic + ML engine      │
+│    ├─ ml_typo_engine.py → TF-IDF typosquatting detector     │
+│    ├─ takedown_automation.py → OSINT + SOC ticket dispatch  │
+│    ├─ registry_sync.py  → Dynamic domain whitelist (6hr)    │
+│    └─ meta_client.py    → WhatsApp Cloud API client         │
+└─────────────────────────────────────────────────────────────┘</div>
+
+<h2>4. BACKEND PIPELINE DETAIL</h2>
+<h3>When a WhatsApp message arrives:</h3>
+<div class="flow-step"><div class="flow-num">1</div><div>Meta sends a webhook POST to <code>/webhook</code> with the message payload</div></div>
+<div class="flow-step"><div class="flow-num">2</div><div>KAVACH identifies the message type: <strong>text</strong>, <strong>image</strong>, or <strong>document</strong></div></div>
+<div class="flow-step"><div class="flow-num">3</div><div><strong>Text:</strong> Extract URLs → run 8-rule heuristic chain → query VirusTotal + Safe Browsing → return verdict</div></div>
+<div class="flow-step"><div class="flow-num">4</div><div><strong>Image:</strong> Download from Meta CDN → decode QR codes (pyzbar) → extract URLs → run text pipeline</div></div>
+<div class="flow-step"><div class="flow-num">5</div><div><strong>Document (APK):</strong> Verify magic bytes → extract signing certificates from ZIP → flag unsigned/tampered APKs</div></div>
+<div class="flow-step"><div class="flow-num">6</div><div>If phishing detected → reply warning to user via WhatsApp + trigger <strong>Automated Takedown Protocol</strong></div></div>
+
+<h3>Automated Takedown Protocol (Background Task):</h3>
+<div class="flow-step"><div class="flow-num">1</div><div><strong>Phase 1 — OSINT:</strong> DNS resolution + WHOIS lookup (registrar, abuse contacts, nameservers)</div></div>
+<div class="flow-step"><div class="flow-num">2</div><div><strong>Phase 2 — Google Report:</strong> Submit URL to Google Safe Browsing Lookup API v4</div></div>
+<div class="flow-step"><div class="flow-num">3</div><div><strong>Phase 3 — SOC Ticket:</strong> Generate CERT-In/APWG-style abuse report → email to internal SOC analyst queue</div></div>
+
+<h2>5. SECURITY FEATURES SUMMARY</h2>
+<table>
+  <tr><th>#</th><th>FEATURE</th><th>TECHNOLOGY</th><th>STATUS</th></tr>
+  <tr><td>1</td><td>Hardware TEE Attestation</td><td>Google Play Integrity API (TEE/HSM)</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>2</td><td>Root Detection</td><td>su binary scan + package audit + test-keys</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>3</td><td>App Signature Verification</td><td>SHA-256 cert fingerprint extraction</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>4</td><td>Trojan Overlay Detection</td><td>Accessibility/Overlay permission audit</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>5</td><td>SMS Interception</td><td>BroadcastReceiver (RECEIVE_SMS)</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>6</td><td>Omni-Channel Notification Scan</td><td>NotificationListenerService</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>7</td><td>Accessibility Hijack Detection</td><td>Sideload-filtered service audit</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>8</td><td>Notification Snooper Detection</td><td>Sideload-filtered listener audit</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>9</td><td>Full-Screen Blocking Overlay</td><td>SYSTEM_ALERT_WINDOW foreground service</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>10</td><td>WhatsApp Phishing Detection</td><td>Meta Cloud API webhook + heuristics</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>11</td><td>ML Typosquatting Detection</td><td>Scikit-learn TF-IDF cosine similarity</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>12</td><td>QR Code Scanning</td><td>pyzbar QR decode → URL extraction</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>13</td><td>APK Signature Verification</td><td>Magic byte + ZIP cert extraction</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>14</td><td>Automated Takedown Engine</td><td>WHOIS + DNS + Safe Browsing + SMTP</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>15</td><td>Dynamic Domain Whitelist</td><td>APScheduler 6hr sync from registry</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>16</td><td>Telemetry Store-and-Forward</td><td>SQLite + HTTP retry loop</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>17</td><td>TTS Audio Alerts</td><td>flutter_tts (en-IN, auto-speak)</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>18</td><td>Anti-Tapjacking (FLAG_SECURE)</td><td>Native WindowManager flag</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>19</td><td>Scam Education Game</td><td>Appinio Swiper + TTS</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>20</td><td>Google Safe Browsing Integration</td><td>Lookup API v4</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+  <tr><td>21</td><td>VirusTotal Integration</td><td>API v3 (70+ AV engines)</td><td><span class="tag tag-green">ACTIVE</span></td></tr>
+</table>
+
+<h2>6. KEY TECHNICAL DIFFERENTIATORS</h2>
+<ul>
+  <li><strong>Zero-Trust Architecture:</strong> Every security layer operates independently. A bypass at one layer does not compromise the others.</li>
+  <li><strong>Omni-Channel Coverage:</strong> Unlike SMS-only solutions, KAVACH monitors ALL messaging apps via NotificationListenerService — WhatsApp, Telegram, Signal, Messenger, and any future app.</li>
+  <li><strong>Hardware-Backed Attestation:</strong> Uses the device's Trusted Execution Environment (TEE) — a physically isolated security chip — making root detection impossible to spoof from software.</li>
+  <li><strong>ML-Powered Typosquatting:</strong> Character-level TF-IDF detects sophisticated domain impersonation (e.g., "sttebankofindia.com" mimicking "statebankofindia.com").</li>
+  <li><strong>Accessibility-First Design:</strong> Auto-speaking TTS warnings, massive icons, and high-contrast UI serve rural, low-literacy users who cannot read complex security alerts.</li>
+  <li><strong>Automated Takedown:</strong> Not just detection — the system automatically gathers OSINT evidence and dispatches abuse reports to take down phishing domains.</li>
+  <li><strong>Offline Resilience:</strong> SQLite store-and-forward ensures threat telemetry is never lost, even without network connectivity.</li>
+</ul>
+
+<h2>7. TECH STACK</h2>
+<table>
+  <tr><th>LAYER</th><th>TECHNOLOGY</th><th>PURPOSE</th></tr>
+  <tr><td>Frontend</td><td>Flutter 3.x (Dart)</td><td>Cross-platform UI with premium animations</td></tr>
+  <tr><td>Native Bridge</td><td>Kotlin (Android)</td><td>PackageManager, NotificationListener, Overlay, TEE</td></tr>
+  <tr><td>IPC</td><td>MethodChannel</td><td>Flutter ↔ Kotlin communication</td></tr>
+  <tr><td>Backend</td><td>Python FastAPI + Uvicorn</td><td>Webhook processing, URL scanning, takedowns</td></tr>
+  <tr><td>ML Engine</td><td>Scikit-learn (TF-IDF)</td><td>Domain typosquatting detection</td></tr>
+  <tr><td>Threat Intel</td><td>VirusTotal + Google Safe Browsing</td><td>External reputation databases</td></tr>
+  <tr><td>Messaging API</td><td>Meta Graph API v18.0</td><td>WhatsApp webhook + reply delivery</td></tr>
+  <tr><td>OSINT</td><td>python-whois + DNS</td><td>Domain evidence gathering for takedowns</td></tr>
+  <tr><td>Local DB</td><td>SQLite (sqflite)</td><td>Offline threat telemetry queue</td></tr>
+  <tr><td>Scheduler</td><td>APScheduler</td><td>6-hour domain whitelist sync</td></tr>
+</table>
+
+<div class="footer">
+  YONO Shield — KAVACH Zero-Trust Security Platform<br>
+  Generated from codebase analysis • All features verified against actual source code
+</div>
+</div>
+</body>
+</html>
