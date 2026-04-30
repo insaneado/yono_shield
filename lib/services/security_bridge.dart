@@ -187,4 +187,49 @@ class SecurityBridge {
       throw Exception('Uninstall failed: ${e.message}');
     }
   }
+
+  // ==========================================================================
+  // OVERLAY CONTROL — Lockdown Shield
+  // ==========================================================================
+
+  /// Check if SYSTEM_ALERT_WINDOW permission is granted.
+  Future<bool> checkOverlayPermission() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('checkOverlayPermission');
+      return result ?? false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  /// Open the system settings to grant overlay permission.
+  Future<void> requestOverlayPermission() async {
+    try {
+      await _channel.invokeMethod('requestOverlayPermission');
+    } catch (_) {}
+  }
+
+  /// Start the full-screen blocking overlay service.
+  Future<bool> showLockdownOverlay() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('showLockdownOverlay');
+      return result ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException catch (e) {
+      throw Exception('Overlay failed: ${e.message}');
+    }
+  }
+
+  /// Stop the blocking overlay service.
+  Future<bool> hideLockdownOverlay() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('hideLockdownOverlay');
+      return result ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException catch (e) {
+      throw Exception('Overlay dismiss failed: ${e.message}');
+    }
+  }
 }

@@ -358,6 +358,59 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
+                    // ── Overlay Control ──────────────────────────────
+                    "showLockdownOverlay" -> {
+                        try {
+                            if (android.provider.Settings.canDrawOverlays(this@MainActivity)) {
+                                val intent = android.content.Intent(this@MainActivity, OverlayService::class.java)
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    startForegroundService(intent)
+                                } else {
+                                    startService(intent)
+                                }
+                                Log.d(TAG, "OverlayService started — lockdown active")
+                                result.success(true)
+                            } else {
+                                Log.w(TAG, "SYSTEM_ALERT_WINDOW permission not granted")
+                                result.error("PERMISSION_DENIED", "Overlay permission not granted", null)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to start OverlayService", e)
+                            result.error("OVERLAY_ERROR", "Failed to start overlay: ${e.message}", null)
+                        }
+                    }
+
+                    "hideLockdownOverlay" -> {
+                        try {
+                            val intent = android.content.Intent(this@MainActivity, OverlayService::class.java)
+                            stopService(intent)
+                            Log.d(TAG, "OverlayService stopped — lockdown dismissed")
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to stop OverlayService", e)
+                            result.error("OVERLAY_ERROR", "Failed to stop overlay: ${e.message}", null)
+                        }
+                    }
+
+                    "checkOverlayPermission" -> {
+                        val canDraw = android.provider.Settings.canDrawOverlays(this@MainActivity)
+                        result.success(canDraw)
+                    }
+
+                    "requestOverlayPermission" -> {
+                        try {
+                            val intent = android.content.Intent(
+                                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                android.net.Uri.parse("package:$packageName")
+                            )
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to open overlay settings", e)
+                            result.error("SETTINGS_ERROR", "Failed to open settings: ${e.message}", null)
+                        }
+                    }
+
                     else -> result.notImplemented()
                 }
             }
