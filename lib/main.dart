@@ -32,7 +32,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_windowmanager/flutter_windowmanager.dart';
+// flutter_windowmanager removed (abandoned, breaks AGP 8.7+)
+// FLAG_SECURE is now set natively via MethodChannel → MainActivity.kt
 import 'package:google_fonts/google_fonts.dart';
 import 'pages/clone_radar_page.dart';
 import 'pages/sms_interceptor_page.dart';
@@ -71,12 +72,16 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // ── Anti-Tapjacking: FLAG_SECURE ──
-  // This single line instructs the Android OS to block ALL
-  // SYSTEM_ALERT_WINDOW overlays and screen recorders from capturing
-  // the KAVACH interface. It neutralizes invisible overlay attacks
-  // (tapjacking) and prevents screen recording / screenshots of
-  // sensitive banking data. No malicious app can draw on top of us.
-  await FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+  // Instructs the Android OS to block ALL SYSTEM_ALERT_WINDOW overlays
+  // and screen recorders from capturing the KAVACH interface.
+  // Set natively via MethodChannel (flutter_windowmanager is abandoned).
+  try {
+    const securityChannel = MethodChannel('com.yonoshield.security/bridge');
+    await securityChannel.invokeMethod('enableFlagSecure');
+  } catch (_) {
+    // Non-fatal: FLAG_SECURE is a defense-in-depth measure.
+    // App must still launch even if this fails (e.g. on desktop/emulator).
+  }
 
   await sync_manager.SyncManager.instance.initialize();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);

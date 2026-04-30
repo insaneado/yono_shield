@@ -29,7 +29,8 @@ dependencies:
   appinio_swiper: ^2.1.1
 
   # Anti-Tapjacking — FLAG_SECURE blocks overlays, screenshots, screen recording
-  flutter_windowmanager: ^0.2.0
+  # flutter_windowmanager removed: abandoned package, breaks AGP 8.7+
+  # FLAG_SECURE is now set natively in MainActivity.kt
 
   # Hardware Attestation — Google Play Integrity API (TEE-backed)
   # Replaces flutter_jailbreak_detection (software root check easily bypassed by Magisk)

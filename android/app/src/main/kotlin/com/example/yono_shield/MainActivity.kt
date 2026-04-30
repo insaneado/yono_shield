@@ -13,6 +13,7 @@ import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import android.view.accessibility.AccessibilityManager
+import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.play.core.integrity.IntegrityManagerFactory
@@ -343,6 +344,17 @@ class MainActivity : FlutterActivity() {
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to check notification listener status", e)
                             result.success(false)
+                        }
+                    }
+
+                    "enableFlagSecure" -> {
+                        try {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                            Log.d(TAG, "FLAG_SECURE enabled — anti-tapjacking active")
+                            result.success(true)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to set FLAG_SECURE", e)
+                            result.error("FLAG_SECURE_ERROR", "Failed to set FLAG_SECURE: ${e.message}", null)
                         }
                     }
 
