@@ -7,7 +7,7 @@ import 'package:http/http.dart' as http;
 
 import 'telemetry_db.dart';
 
-const String _telemetryEndpoint = 'http://10.0.2.2:8080/api/telemetry';
+const String _telemetryEndpoint = 'https://filth-endurable-swear.ngrok-free.dev/api/telemetry';
 const Duration _telemetryTimeout = Duration(seconds: 5);
 
 /// Queues telemetry locally, then attempts a best-effort cloud sync.
