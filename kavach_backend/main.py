@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import requests
@@ -56,6 +57,12 @@ from meta_client import (
 )
 from scanner import extract_urls, scan_image, scan_url
 from takedown_automation import execute_takedown_protocol
+from registry_sync import (
+    get_sync_status,
+    run_initial_sync,
+    start_scheduler,
+    stop_scheduler,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENVIRONMENT & LOGGING
@@ -81,6 +88,37 @@ ANDROID_ZIP_MAGIC = bytes.fromhex("50 4B 03 04")
 DEX_MAGIC = bytes.fromhex("64 65 78 0A")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# APP LIFESPAN — Registry Sync Engine Bootstrap
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """FastAPI lifespan context manager.
+
+    Startup:
+      1. Run an IMMEDIATE registry sync so the whitelist is populated
+         from the Central Registry before the first request arrives.
+      2. Start the APScheduler background job that re-syncs every 6 hours.
+
+    Shutdown:
+      1. Gracefully stop the APScheduler daemon thread.
+    """
+    # ── STARTUP ──
+    logger.info("🚀 KAVACH Lifespan: booting Registry Sync Engine...")
+    run_initial_sync()
+    start_scheduler()
+    logger.info("🟢 KAVACH Lifespan: Registry Sync Engine is LIVE")
+
+    yield  # ← application runs here
+
+    # ── SHUTDOWN ──
+    logger.info("🔴 KAVACH Lifespan: shutting down Registry Sync Engine...")
+    stop_scheduler()
+    logger.info("KAVACH Lifespan: clean shutdown complete")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # APP INIT
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -93,6 +131,7 @@ app = FastAPI(
         "hidden in images."
     ),
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -396,7 +435,18 @@ async def health_check() -> dict:
         "version": "2.0.0",
         "status": "operational",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "registry_sync": get_sync_status(),
     }
+
+
+@app.get("/health/registry")
+async def registry_health() -> dict:
+    """Dedicated observability endpoint for the Registry Sync Engine.
+
+    Returns the current whitelist size, last sync time, source,
+    and the configured registry URL and interval.
+    """
+    return get_sync_status()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -8,3 +8,4 @@ pyzbar==0.1.9
 Pillow==11.1.0
 python-dotenv==1.0.1
 python-whois==0.9.4
+apscheduler==3.10.4

@@ -39,6 +39,7 @@ from PIL import Image
 from pyzbar import pyzbar
 
 from ml_typo_engine import TypoSimilarityEngine
+from registry_sync import get_whitelisted_domains
 
 logger = logging.getLogger("kavach.scanner")
 
@@ -47,24 +48,15 @@ logger = logging.getLogger("kavach.scanner")
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Official SBI domains that are SAFE and must never be flagged.
-# This is the "Dynamic Whitelist" — add new verified marketing domains here
-# as campaigns launch.  Any domain in this set bypasses all heuristic checks.
-WHITELISTED_DOMAINS: set[str] = {
-    # ── Core banking portals ──
-    "onlinesbi.sbi",
-    "sbiyono.sbi",
-    "sbi.co.in",
-    "bank.sbi",
-    "www.onlinesbi.sbi",
-    "www.sbiyono.sbi",
-    "www.sbi.co.in",
-    "www.bank.sbi",
-    # ── Verified marketing / promotional domains ──
-    "sbi-yono-offers.in",
-    "www.sbi-yono-offers.in",
-    "sbirewardz.sbi",
-    "www.sbirewardz.sbi",
-}
+# This whitelist is NOW DYNAMICALLY LOADED from the SBI Central Registry API
+# via registry_sync.py.  The background sync engine pulls new domains every
+# 6 hours and merges them with a hardcoded seed set of core banking portals.
+#
+# To add new verified marketing domains, update the Central Registry JSON —
+# do NOT add hardcoded entries here.  See registry_sync.py for architecture.
+#
+# The function get_whitelisted_domains() returns a live frozenset that is
+# thread-safe and updated atomically by the sync engine.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SCAN PIPELINE — Timeouts & Limits
@@ -256,8 +248,9 @@ def _check_brand_spoofing(domain: str) -> str | None:
     Fires if the domain contains a protected brand keyword but is NOT
     in the official whitelist.
     """
+    live_whitelist = get_whitelisted_domains()
     for keyword in BRAND_KEYWORDS:
-        if keyword in domain and domain not in WHITELISTED_DOMAINS:
+        if keyword in domain and domain not in live_whitelist:
             return (
                 f"BRAND_SPOOFING: domain contains '{keyword}' "
                 f"but is not an official SBI domain"
@@ -316,7 +309,7 @@ def check_ml_typo_similarity(domain: str) -> tuple[bool, str | None, float]:
         (is_threat, reason_string_or_None, highest_similarity_score)
     """
     # Domains already in the whitelist are guaranteed safe
-    if domain in WHITELISTED_DOMAINS:
+    if domain in get_whitelisted_domains():
         return False, None, 0.0
 
     typo_result = _TYPO_ENGINE.score(domain)
@@ -561,7 +554,9 @@ def scan_url(url: str) -> dict:
 
     # ── GATE 1: Dynamic Whitelist ─────────────────────────────────────────
     # If the domain is pre-verified, skip ALL heuristic checks.
-    if domain_no_port in WHITELISTED_DOMAINS:
+    # Uses the LIVE frozenset from registry_sync — updated every 6 hours.
+    live_whitelist = get_whitelisted_domains()
+    if domain_no_port in live_whitelist:
         logger.info(
             "WHITELIST HIT: %s is a verified official domain → SAFE",
             domain_no_port,
